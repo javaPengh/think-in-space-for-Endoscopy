@@ -22,11 +22,11 @@ DEFAULT_GEN_KWARGS = dict(
 )
 
 
-@register_model("qwen3vl")
-class Qwen3VL(lmms):
+@register_model("qwen3vl_32b")
+class Qwen3VL_32B(lmms):
     def __init__(
         self,
-        pretrained: str = "Qwen/Qwen3-VL-8B-Instruct",
+        pretrained: str = "Qwen/Qwen3-VL-32B-Instruct",
         modality: str = "video",
         device: str = "cuda:0",
         device_map: str = "cuda:0",
@@ -48,7 +48,7 @@ class Qwen3VL(lmms):
         self._processor = AutoProcessor.from_pretrained(self.path, trust_remote_code=True)
 
         batch_size = int(batch_size)
-        assert batch_size == 1, f"Batch size should be 1 for Qwen3VL, but got {batch_size}."
+        assert batch_size == 1, f"Batch size should be 1 for Qwen3VL_32B, but got {batch_size}."
         self.batch_size_per_gpu = batch_size
 
         # Accelerator setup
@@ -147,7 +147,7 @@ class Qwen3VL(lmms):
             visuals = [doc_to_visual(self.task_dict[task][split][doc_id])]
             visuals = self.flatten(visuals)
             if self.modality == "image":
-                raise NotImplementedError("Image inference for Qwen3VL is not supported yet.")
+                raise NotImplementedError("Image inference for Qwen3VL_32B is not supported yet.")
             elif self.modality == "video":
                 assert len(visuals) == 1, f"Only one video is supported, but got {len(visuals)} videos."
                 video_path = visuals[0]
@@ -160,14 +160,7 @@ class Qwen3VL(lmms):
 
                 # ================= 正确的视觉参数传入方式与严谨抽帧 =================
                 # 为了不依赖 qwen_vl_utils 底层的黑盒抽帧，确保无论视频多长都绝对均匀抽取指定帧数
-                # 尤其针对医学视频评估中时序连贯性的严谨要求，这里显式使用 decord 进行抽取
-                import decord
-                import numpy as np
-                decord.bridge.set_bridge("torch")
-                vr = decord.VideoReader(video_path, num_threads=1)
-                total_frames = len(vr)
-                
-                # 计算绝对均匀的帧索引
+                # 尤其针对医学视频评估中时序连贯性的严谨要求，这里显式使用
                 frame_indices = np.linspace(0, total_frames - 1, self.max_frames_num, dtype=int).tolist()
                 
                 # 不依赖底层对于 `video` 路径的处理。我们将严格依据索引拉取图像矩阵并转存传递。
@@ -186,15 +179,15 @@ class Qwen3VL(lmms):
                 frame_paths = []
                 for idx, frame_arr in enumerate(frames):
                     img = Image.fromarray(frame_arr)
-                    tmp_path = os.path.join(temp_dir, f"qwen3vl_eval_{unique_session}_frame_{idx:04d}.jpg")
+                    tmp_path = os.path.join(temp_dir, f"qwen3vl_32b_eval_{unique_session}_frame_{idx:04d}.jpg")
                     img.save(tmp_path, format="JPEG", quality=95)
                     frame_paths.append(tmp_path)
                 
-                # 这种传法彻底锁死了视频内容为我们手动截取的帧数
+                # 这种传法彻底锁死了视频内容为我们手动截取的 32 帧
                 video_content = {
                     "type": "video",
                     "video": frame_paths,
-                    "max_pixels": self.max_pixels,
+                    "max_pixels": self.max_pixels,  # 依然在此约束最高分辨率 OOM
                     "fps": 1.0 # 这里的 fps 在列表模式下仅用于控制底层时间戳计算(如每秒1帧)，对截断无影响
                 }
                 messages = [
@@ -216,9 +209,10 @@ class Qwen3VL(lmms):
                 )
 
                 # 2. 强制使用 Qwen 官方工具！它才会真正读取 max_pixels
+                # 这里它会基于设定的 fps 和 max_frames 做抽取，达到类均匀效果
                 image_inputs, video_inputs = process_vision_info(messages)
 
-                # 3. 将降采样后体积的安全张量交给模型
+                # 3. 将降采样后体积只有几十 MB 的安全张量交给模型
                 inputs = self._processor(
                     text=[text],
                     images=image_inputs,
@@ -235,7 +229,6 @@ class Qwen3VL(lmms):
                 # Trim input tokens from output
                 generated_ids_trimmed = [out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
                 output_text = self._processor.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
-                
                 # ================= 新增：强力显存回收机制 =================
                 # 1. 彻底切断当前样本的所有大张量引用
                 del inputs

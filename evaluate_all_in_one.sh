@@ -3,7 +3,8 @@
 set -e
 
 export CUDA_VISIBLE_DEVICES=0,1,2,3
-
+export NCCL_P2P_DISABLE=1
+export NCCL_IB_DISABLE=1
 if [ -z "$CUDA_VISIBLE_DEVICES" ]; then
     gpu_count=$(nvidia-smi --query-gpu=index --format=csv,noheader | wc -l)
 else
@@ -144,6 +145,17 @@ for model in "${models[@]}"; do
         model_family="qwen3vl"
         model="qwen3vl_8b_${num_frames}f"
         model_args="pretrained=~/.cache/modelscope/hub/models/Qwen/Qwen3-VL-8B-Instruct,modality=video,max_frames_num=$num_frames"
+        ;;
+    "qwen3vl_32b_32f")
+        model_family="qwen3vl_32b"
+        model="qwen3vl_32b_${num_frames}f"
+        model_args="pretrained=~/.cache/modelscope/hub/models/Qwen/Qwen3-VL-32B-Instruct,modality=video,max_frames_num=$num_frames,device_map=auto"
+        num_processes=1
+        ;;
+    "qwen3vl_8b_thinking_32f")
+        model_family="qwen3vl_8b_thinking"
+        model="qwen3vl_8b_thinking_${num_frames}f"
+        model_args="pretrained=~/.cache/modelscope/hub/models/Qwen/Qwen3-VL-8B-Thinking,modality=video,max_frames_num=$num_frames"
         ;;
     *)
         echo "Unknown model: $model"

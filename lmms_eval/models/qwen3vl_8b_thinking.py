@@ -17,16 +17,16 @@ from lmms_eval.api.registry import register_model
 from loguru import logger as eval_logger
 
 DEFAULT_GEN_KWARGS = dict(
-    max_new_tokens=1024,
+    max_new_tokens=8192,  # 针对 thinking 模型的默认输出长度需大幅提高，以免思考过程被截断
     do_sample=False,
 )
 
 
-@register_model("qwen3vl")
-class Qwen3VL(lmms):
+@register_model("qwen3vl_8b_thinking")
+class Qwen3VL_8B_Thinking(lmms):
     def __init__(
         self,
-        pretrained: str = "Qwen/Qwen3-VL-8B-Instruct",
+        pretrained: str = "Qwen/Qwen3-VL-8B-Thinking",
         modality: str = "video",
         device: str = "cuda:0",
         device_map: str = "cuda:0",
@@ -48,7 +48,7 @@ class Qwen3VL(lmms):
         self._processor = AutoProcessor.from_pretrained(self.path, trust_remote_code=True)
 
         batch_size = int(batch_size)
-        assert batch_size == 1, f"Batch size should be 1 for Qwen3VL, but got {batch_size}."
+        assert batch_size == 1, f"Batch size should be 1 for Qwen3VL_8B_Thinking, but got {batch_size}."
         self.batch_size_per_gpu = batch_size
 
         # Accelerator setup
@@ -147,7 +147,7 @@ class Qwen3VL(lmms):
             visuals = [doc_to_visual(self.task_dict[task][split][doc_id])]
             visuals = self.flatten(visuals)
             if self.modality == "image":
-                raise NotImplementedError("Image inference for Qwen3VL is not supported yet.")
+                raise NotImplementedError("Image inference for Qwen3VL_8B_Thinking is not supported yet.")
             elif self.modality == "video":
                 assert len(visuals) == 1, f"Only one video is supported, but got {len(visuals)} videos."
                 video_path = visuals[0]
@@ -186,23 +186,38 @@ class Qwen3VL(lmms):
                 frame_paths = []
                 for idx, frame_arr in enumerate(frames):
                     img = Image.fromarray(frame_arr)
-                    tmp_path = os.path.join(temp_dir, f"qwen3vl_eval_{unique_session}_frame_{idx:04d}.jpg")
+                    tmp_path = os.path.join(temp_dir, f"qwen3vl_8b_thinking_eval_{unique_session}_frame_{idx:04d}.jpg")
                     img.save(tmp_path, format="JPEG", quality=95)
                     frame_paths.append(tmp_path)
                 
-                # 这种传法彻底锁死了视频内容为我们手动截取的帧数
+                # 这种传法彻底锁死了视频内容为我们手动截取的 32 帧
                 video_content = {
                     "type": "video",
                     "video": frame_paths,
-                    "max_pixels": self.max_pixels,
+                    "max_pixels": self.max_pixels,  # 依然在此约束最高分辨率 OOM
                     "fps": 1.0 # 这里的 fps 在列表模式下仅用于控制底层时间戳计算(如每秒1帧)，对截断无影响
                 }
+                # ================= Thinking 模型专属 Prompt 替换 =================
+                # 思考模型与全局强硬的短回答指令冲突，因此在模型类内部进行专门的提示词改写。
+                # 查找 contexts 中由于 lmms_eval 默认注入的 "Answer with the option's letter from the given choices directly."
+                # 并将其替换为专门适合 Thinking 模型的指令。
+                import re
+                thinking_prompt = (
+                    "Please think step by step first. "
+                    "After your detailed analysis, you MUST output your final answer wrapped exactly in <answer> and </answer> tags. "
+                    "For example: <answer>A</answer>."
+                )
+                # 移除原有的强硬指令并替换，如果没匹配到，则作为兜底直接在结尾追加。
+                adapted_contexts = contexts.replace("Answer with the option's letter from the given choices directly.", thinking_prompt)
+                if adapted_contexts == contexts:
+                    adapted_contexts = contexts + "\n\n" + thinking_prompt
+                
                 messages = [
                     {
                         "role": "user",
                         "content": [
                             video_content,
-                            {"type": "text", "text": f"{contexts}"},
+                            {"type": "text", "text": f"{adapted_contexts}"},
                         ],
                     }
                 ]
@@ -216,9 +231,10 @@ class Qwen3VL(lmms):
                 )
 
                 # 2. 强制使用 Qwen 官方工具！它才会真正读取 max_pixels
+                # 这里它会基于设定的 fps 和 max_frames 做抽取，达到类均匀效果
                 image_inputs, video_inputs = process_vision_info(messages)
 
-                # 3. 将降采样后体积的安全张量交给模型
+                # 3. 将降采样后体积只有几十 MB 的安全张量交给模型
                 inputs = self._processor(
                     text=[text],
                     images=image_inputs,
@@ -234,7 +250,25 @@ class Qwen3VL(lmms):
 
                 # Trim input tokens from output
                 generated_ids_trimmed = [out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
-                output_text = self._processor.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+                raw_output_text = self._processor.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+                
+                # ================= 新增：强力答案提取器 (Answer Extractor) =================
+                # 由于这是 Thinking 模型，我们需要剥离掉前面所有的思考过程，只提取最后答案
+                import re
+                output_text = raw_output_text
+                # 尝试匹配我们在 thinking_prompt 中要求模型生成的 <answer> 标签
+                match = re.search(r"<answer>\s*([A-Za-z0-9])\s*</answer>", raw_output_text, re.IGNORECASE)
+                if match:
+                    output_text = match.group(1).upper()
+                else:
+                    # 如果模型没有听话包裹 <answer>，作为 fallback 策略：
+                    # 从后往前找整个输出文本里出现的最后一个独立的大写字母（A-D 通常是选项）
+                    fallback_match = re.findall(r"\b([A-D])\b", raw_output_text)
+                    if fallback_match:
+                        output_text = fallback_match[-1]
+                    else:
+                        output_text = raw_output_text # 最差的情况：原样返回给 lmms_eval 碰运气
+                # =====================================================================
                 
                 # ================= 新增：强力显存回收机制 =================
                 # 1. 彻底切断当前样本的所有大张量引用
