@@ -2,7 +2,7 @@
 
 set -e
 
-export CUDA_VISIBLE_DEVICES=1,2,3,4
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5
 export NCCL_P2P_DISABLE=1
 export NCCL_IB_DISABLE=1
 if [ -z "$CUDA_VISIBLE_DEVICES" ]; then
@@ -157,7 +157,7 @@ for model in "${models[@]}"; do
         model="internvl3_78b_${num_frames}f"
         # 78B 是超大模型，必须开启 device_map=auto 使用模型并行，同时降低数据并行进程为 1 防止 OOM
         # 显存/内存双重优化：采用 load_in_4bit=True (NF4)，将 78B 权重显存与内存缓冲需求极度压缩
-        model_args="pretrained=~/.cache/modelscope/hub/models/OpenGVLab/InternVL3-78B,modality=video,max_frames_num=$num_frames,device_map=auto,load_in_4bit=True"
+        model_args="pretrained=~/.cache/modelscope/hub/models/OpenGVLab/InternVL3-78B,modality=video,max_frames_num=16,device_map=auto,load_in_4bit=True"
         num_processes=1
         ;;
     "qwen3vl_8b_32f")
@@ -198,8 +198,8 @@ for model in "${models[@]}"; do
         --model_args $model_args \
         --tasks $benchmark \
         --batch_size 1 \
-        --log_samples \
-        --log_samples_suffix $model \
+#        --log_samples \
+#        --log_samples_suffix $model \
         --output_path $output_path/$benchmark"
 
     if [ "$use_wandb_args" = true ]; then

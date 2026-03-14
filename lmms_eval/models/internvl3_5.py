@@ -208,33 +208,62 @@ def load_video(
 @register_model("internvl3_5")
 class InternVL3_5(lmms):
     def split_model_for_78b(self):
-        """78B hardcoded map + safe fallback to GPU0 to avoid CPU offload OOM."""
+        """
+        Device map aligned to the official InternVL3-78B HF model card (multi-GPU split_model example),
+        adapted for 6x RTX 4090 and LMMS.
+
+        Key differences vs previous version:
+        - num_layers is read from config (no hardcoded 80)
+        - explicitly pins official non-layer modules to GPU0 (vision_model/mlp1/rotary/output/etc.)
+        - forces last layer onto GPU0 (official workaround for device mismatch)
+        - keeps device_map[""]=0 as a LMMS safety net (avoid any CPU placement)
+        """
         import math
+
+        # Official model card reads layers from config.llm_config.num_hidden_layers
+        cfg = AutoConfig.from_pretrained(self.path, trust_remote_code=True)
+        num_layers = int(getattr(getattr(cfg, "llm_config", cfg), "num_hidden_layers"))
 
         world_size = torch.cuda.device_count()
         if world_size < 1:
             raise RuntimeError("No CUDA devices found for InternVL3-78B.")
+        if world_size != 6:
+            eval_logger.warning(f"Expected 6 GPUs (RTX 4090 x6), but detected {world_size} GPUs.")
 
         device_map = {}
-        num_layers = 80
 
+        # Official heuristic: treat GPU0 as "half GPU" because it hosts vision + shared modules.
         num_layers_per_gpu = math.ceil(num_layers / (world_size - 0.5))
         num_layers_per_gpu = [num_layers_per_gpu] * world_size
         num_layers_per_gpu[0] = math.ceil(num_layers_per_gpu[0] * 0.5)
 
         layer_cnt = 0
-        for i, num_layer in enumerate(num_layers_per_gpu):
-            for _ in range(num_layer):
+        for i, n in enumerate(num_layers_per_gpu):
+            for _ in range(n):
                 if layer_cnt < num_layers:
                     device_map[f"language_model.model.layers.{layer_cnt}"] = i
                     layer_cnt += 1
 
-        # Critical fallback: all unmatched modules stay on GPU0 (not CPU)
+        # --- Official pins (model card) ---
+        # Note: Some names differ across InternVL code variants; we include official keys + common aliases.
+        pinned_to_0 = [
+            "vision_model",
+            "mlp1",
+            "language_model.model.tok_embeddings",
+            "language_model.model.embed_tokens",
+            "language_model.output",
+            "language_model.model.norm",
+            "language_model.model.rotary_emb",
+            "language_model.lm_head",
+        ]
+        for k in pinned_to_0:
+            device_map[k] = 0
+
+        # Official workaround: force last layer to GPU0
+        device_map[f"language_model.model.layers.{num_layers - 1}"] = 0
+
+        # LMMS safety net: any unmatched module stays on GPU0 (NOT CPU)
         device_map[""] = 0
-        # Common non-layer modules (best effort; fallback still covers unmatched keys)
-        device_map["language_model.model.embed_tokens"] = 0
-        device_map["language_model.model.norm"] = 0
-        device_map["language_model.lm_head"] = 0
         return device_map
 
     def __init__(
@@ -248,6 +277,7 @@ class InternVL3_5(lmms):
         load_in_8bit: bool = False,
         load_in_4bit: bool = False,
         save_sampled_frames: bool = False,
+        use_flash_attn: bool = True,
         **kwargs,
     ):
         super().__init__()
@@ -265,6 +295,7 @@ class InternVL3_5(lmms):
 
         load_in_8bit = str(load_in_8bit).lower() in ["true", "1", "t", "y", "yes"]
         load_in_4bit = str(load_in_4bit).lower() in ["true", "1", "t", "y", "yes"]
+        use_flash_attn = str(use_flash_attn).lower() in ["true", "1", "t", "y", "yes"]
 
         from transformers import BitsAndBytesConfig
 
@@ -279,18 +310,18 @@ class InternVL3_5(lmms):
         elif load_in_8bit:
             quantization_config = BitsAndBytesConfig(load_in_8bit=True)
 
-        # Safer memory guardrails for OOM-prone host
+        # Guardrails: keep CPU budget small to avoid host swap death
         max_memory = {}
         for i in range(torch.cuda.device_count()):
             max_memory[i] = "23GiB"
             max_memory[f"cuda:{i}"] = "23GiB"
-        max_memory["cpu"] = "8GiB"  # do NOT allow massive CPU offload
+        max_memory["cpu"] = "8GiB"
 
         custom_device_map = device_map
         if device_map == "auto":
             if is_78b:
                 eval_logger.info(
-                    f"Detected giant model {self.path}, using hardcoded 78B map with GPU fallback."
+                    f"Detected giant model {self.path}, using official-aligned 78B device_map."
                 )
                 custom_device_map = self.split_model_for_78b()
             else:
@@ -305,14 +336,16 @@ class InternVL3_5(lmms):
             device_map=custom_device_map,
             max_memory=max_memory,
             quantization_config=quantization_config,
+            use_flash_attn=use_flash_attn,
         ).eval()
         _log_mem("after_model_from_pretrained")
 
-        # Ensure config property is valid in lmms_eval
         self._config = AutoConfig.from_pretrained(self.path, trust_remote_code=True)
 
         _log_mem("before_tokenizer_from_pretrained")
         self._tokenizer = AutoTokenizer.from_pretrained(self.path, trust_remote_code=True)
+        if self._tokenizer.pad_token_id is None and self._tokenizer.eos_token_id is not None:
+            self._tokenizer.pad_token = self._tokenizer.eos_token
         _log_mem("after_tokenizer_from_pretrained")
 
         batch_size = int(batch_size)
@@ -356,7 +389,9 @@ class InternVL3_5(lmms):
             self._rank = accelerator.local_process_index
             self._world_size = accelerator.num_processes
         elif accelerator.num_processes == 1 and device_map == "auto":
-            eval_logger.info(f"Using {accelerator.num_processes} process with model parallel device_map.")
+            eval_logger.info(
+                f"Using {accelerator.num_processes} process with model parallel device_map."
+            )
             self._rank = 0
             self._world_size = 1
         else:
@@ -399,7 +434,6 @@ class InternVL3_5(lmms):
         return [j for i in input_list for j in i]
 
     def _cast_and_move_pixels(self, pixel_values: torch.Tensor):
-        # IMPORTANT: avoid hardcoded .cuda(); respect current adapter device.
         return pixel_values.to(device=self.device, dtype=torch.bfloat16, non_blocking=True)
 
     def generate_until(self, requests) -> List[str]:
@@ -415,10 +449,15 @@ class InternVL3_5(lmms):
 
             if "until" in gen_kwargs:
                 gen_kwargs.pop("until")
+
             for k, v in DEFAULT_GEN_KWARGS.items():
                 gen_kwargs.setdefault(k, v)
 
-            pop_keys = [k for k in gen_kwargs if k not in DEFAULT_GEN_KWARGS]
+            # Ensure pad_token_id to avoid transformers spam and potential mismatched padding behavior
+            if "pad_token_id" not in gen_kwargs and self.tokenizer.eos_token_id is not None:
+                gen_kwargs["pad_token_id"] = self.tokenizer.eos_token_id
+
+            pop_keys = [k for k in gen_kwargs if k not in DEFAULT_GEN_KWARGS and k != "pad_token_id"]
             for k in pop_keys:
                 gen_kwargs.pop(k)
 
