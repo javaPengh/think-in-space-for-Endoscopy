@@ -1,6 +1,6 @@
-import logging
+import math
 from datetime import timedelta
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -17,19 +17,19 @@ from transformers import AutoConfig, AutoModel, AutoTokenizer
 from lmms_eval.api.instance import Instance
 from lmms_eval.api.model import lmms
 from lmms_eval.api.registry import register_model
-from loguru import logger as eval_logger
+from lmms_eval.logging_utils import eval_logger
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 
-DEFAULT_GEN_KWARGS = dict(
-    num_beams=1,
-    max_new_tokens=1024,
-    do_sample=False,
-)
+DEFAULT_GEN_KWARGS = {
+    "num_beams": 1,
+    "max_new_tokens": 1024,
+    "do_sample": False,
+}
 
 
-def build_transform(input_size):
+def build_transform(input_size: int) -> T.Compose:
     transform = T.Compose(
         [
             T.Lambda(lambda img: img.convert("RGB") if img.mode != "RGB" else img),
@@ -41,7 +41,13 @@ def build_transform(input_size):
     return transform
 
 
-def find_closest_aspect_ratio(aspect_ratio, target_ratios, width, height, image_size):
+def find_closest_aspect_ratio(
+    aspect_ratio: float,
+    target_ratios: List[Tuple[int, int]],
+    width: int,
+    height: int,
+    image_size: int,
+) -> Tuple[int, int]:
     best_ratio_diff = float("inf")
     best_ratio = (1, 1)
     area = width * height
@@ -57,7 +63,13 @@ def find_closest_aspect_ratio(aspect_ratio, target_ratios, width, height, image_
     return best_ratio
 
 
-def dynamic_preprocess(image, min_num=1, max_num=6, image_size=448, use_thumbnail=False):
+def dynamic_preprocess(
+    image: Image.Image,
+    min_num: int = 1,
+    max_num: int = 1,
+    image_size: int = 448,
+    use_thumbnail: bool = True,
+) -> List[Image.Image]:
     orig_width, orig_height = image.size
     aspect_ratio = orig_width / orig_height
 
@@ -79,7 +91,7 @@ def dynamic_preprocess(image, min_num=1, max_num=6, image_size=448, use_thumbnai
     blocks = target_aspect_ratio[0] * target_aspect_ratio[1]
 
     resized_img = image.resize((target_width, target_height))
-    processed_images = []
+    processed_images: List[Image.Image] = []
     for i in range(blocks):
         box = (
             (i % (target_width // image_size)) * image_size,
@@ -87,109 +99,110 @@ def dynamic_preprocess(image, min_num=1, max_num=6, image_size=448, use_thumbnai
             ((i % (target_width // image_size)) + 1) * image_size,
             ((i // (target_width // image_size)) + 1) * image_size,
         )
-        processed_images.append(resized_img.crop(box))
-    assert len(processed_images) == blocks
+        split_img = resized_img.crop(box)
+        processed_images.append(split_img)
 
     if use_thumbnail and len(processed_images) != 1:
-        processed_images.append(image.resize((image_size, image_size)))
+        thumbnail_img = image.resize((image_size, image_size))
+        processed_images.append(thumbnail_img)
     return processed_images
 
 
-def load_image(image, input_size=448, max_num=6):
-    transform = build_transform(input_size=input_size)
-    images = dynamic_preprocess(
-        image, image_size=input_size, use_thumbnail=True, max_num=max_num
-    )
-    pixel_values = [transform(img) for img in images]
-    return torch.stack(pixel_values)
-
-
-def get_index(bound, fps, max_frame, first_idx=0, num_segments=32):
-    if bound:
-        start, end = bound[0], bound[1]
-        start_idx = max(first_idx, round(start * fps))
-        end_idx = min(round(end * fps), max_frame)
-    else:
-        start_idx = first_idx
-        end_idx = max_frame
-
-    return np.linspace(start_idx, end_idx, num_segments, dtype=int)
-
-
 def load_video(
-    video_path,
-    bound=None,
-    input_size=448,
-    max_num=1,
-    num_segments=32,
-):
-    vr = VideoReader(video_path, ctx=cpu(0))
+    video_path: str,
+    bound: Optional[Tuple[float, float]] = None,
+    input_size: int = 448,
+    max_num: int = 1,
+    num_segments: int = 32,
+) -> Tuple[torch.Tensor, List[int]]:
+    vr = VideoReader(video_path, ctx=cpu(0), num_threads=1)
     max_frame = len(vr) - 1
     fps = float(vr.get_avg_fps())
 
-    pixel_values_list, num_patches_list = [], []
+    if bound:
+        start, end = bound[0], bound[1]
+    else:
+        start, end = -100000.0, 100000.0
+
+    start_idx = max(0, round(start * fps))
+    end_idx = min(round(end * fps), max_frame)
+    seg_size = float(end_idx - start_idx) / num_segments
+    frame_indices = np.array(
+        [
+            int(start_idx + (seg_size / 2) + np.round(seg_size * idx))
+            for idx in range(num_segments)
+        ]
+    )
+
+    pixel_values_list: List[torch.Tensor] = []
+    num_patches_list: List[int] = []
     transform = build_transform(input_size=input_size)
-    frame_indices = get_index(bound, fps, max_frame, first_idx=0, num_segments=num_segments)
 
     for frame_index in frame_indices:
-        frame_np = vr[frame_index].asnumpy()
-        img = Image.fromarray(frame_np).convert("RGB")
-        tiles = dynamic_preprocess(img, image_size=input_size, use_thumbnail=True, max_num=max_num)
+        img = Image.fromarray(vr[frame_index].asnumpy()).convert("RGB")
+        tiles = dynamic_preprocess(
+            img,
+            image_size=input_size,
+            use_thumbnail=True,
+            max_num=max_num,
+        )
         pixel_values = [transform(tile) for tile in tiles]
         pixel_values = torch.stack(pixel_values)
         num_patches_list.append(pixel_values.shape[0])
         pixel_values_list.append(pixel_values)
 
-    pixel_values = torch.cat(pixel_values_list)
-    return pixel_values, num_patches_list
+    return torch.cat(pixel_values_list), num_patches_list
 
 
-@register_model("internvl3_5")
-class InternVL3_5(lmms):
+@register_model("internvl3_78b")
+class InternVL3_78B(lmms):
     def __init__(
         self,
-        pretrained: str = "OpenGVLab/InternVL-3.5-2B",
-        modality: str = "image",
+        pretrained: str = "OpenGVLab/InternVL3-78B",
+        modality: str = "video",
         device: str = "cuda:0",
-        device_map: str = "cuda:0",
+        device_map: str = "auto",
         batch_size: str = "1",
         max_frames_num: int = 32,
+        load_in_8bit: bool = False,
+        use_flash_attn: bool = True,
         **kwargs,
-    ):
+    ) -> None:
         super().__init__()
+
         self.path = pretrained
         self.modality = modality
-        self.max_frames_num = max_frames_num
+        self.max_frames_num = int(max_frames_num)
 
-        if device_map == 'auto':
-            self._model = AutoModel.from_pretrained(
-                self.path,
-                torch_dtype=torch.bfloat16,
-                low_cpu_mem_usage=True,
-                trust_remote_code=True,
-                device_map=device_map,
-            ).eval()
-            try:
-                from accelerate.hooks import add_hook_to_module, AlignDevicesHook
-                add_hook_to_module(self._model.language_model.lm_head, AlignDevicesHook(execution_device=self._model.language_model.model.embed_tokens.weight.device))
-            except Exception as e:
-                eval_logger.debug(f"Could not add accelerate hook for internvl3.5: {e}")
-        else:
-            self._model = AutoModel.from_pretrained(
-                self.path,
-                torch_dtype=torch.bfloat16,
-                low_cpu_mem_usage=True,
-                trust_remote_code=True,
-            ).eval().cuda()
+        if self.modality not in {"image", "video"}:
+            raise ValueError(f"Unsupported modality: {self.modality}")
+        if str(device_map).lower() != "auto":
+            raise ValueError("InternVL3-78B must use device_map=auto to follow official split strategy.")
+
+        load_in_8bit = str(load_in_8bit).lower() in {"true", "1", "t", "y", "yes"}
+        use_flash_attn = str(use_flash_attn).lower() in {"true", "1", "t", "y", "yes"}
 
         self._config = AutoConfig.from_pretrained(self.path, trust_remote_code=True)
+        split_device_map = self._split_model_for_78b(self._config)
 
-        self._tokenizer = AutoTokenizer.from_pretrained(self.path, trust_remote_code=True)
+        model_kwargs = {
+            "torch_dtype": torch.bfloat16,
+            "low_cpu_mem_usage": True,
+            "use_flash_attn": use_flash_attn,
+            "trust_remote_code": True,
+            "device_map": split_device_map,
+        }
+        if load_in_8bit:
+            model_kwargs["load_in_8bit"] = True
+
+        self._model = AutoModel.from_pretrained(self.path, **model_kwargs).eval()
+        self._tokenizer = AutoTokenizer.from_pretrained(self.path, trust_remote_code=True, use_fast=False)
         if self._tokenizer.pad_token_id is None and self._tokenizer.eos_token_id is not None:
             self._tokenizer.pad_token = self._tokenizer.eos_token
 
         batch_size = int(batch_size)
-        assert batch_size == 1, f"Batch size should be 1 for InternVL3_5, but got {batch_size}."
+        if batch_size != 1:
+            raise ValueError(f"Batch size should be 1 for InternVL3-78B, but got {batch_size}.")
         self.batch_size_per_gpu = batch_size
 
         accelerator_kwargs = InitProcessGroupKwargs(timeout=timedelta(weeks=52))
@@ -199,26 +212,29 @@ class InternVL3_5(lmms):
         if accelerator.num_processes > 1:
             self._device = torch.device(f"cuda:{accelerator.local_process_index}")
             self.device_map = f"cuda:{accelerator.local_process_index}"
-        elif accelerator.num_processes == 1 and device_map == "auto":
+        elif accelerator.num_processes == 1 and str(device_map).lower() == "auto":
             self._device = torch.device(device)
-            self.device_map = device_map
+            self.device_map = "auto"
         else:
             self._device = torch.device(f"cuda:{accelerator.local_process_index}")
             self.device_map = f"cuda:{accelerator.local_process_index}"
 
         if accelerator.num_processes > 1:
-            assert accelerator.distributed_type in [
+            if accelerator.distributed_type not in [
                 DistributedType.FSDP,
                 DistributedType.MULTI_GPU,
                 DistributedType.DEEPSPEED,
-            ], "Unsupported distributed type provided."
+            ]:
+                raise ValueError("Unsupported distributed type provided.")
+
             if accelerator.distributed_type == DistributedType.DEEPSPEED:
                 kwargs = {
                     "train_micro_batch_size_per_gpu": self.batch_size_per_gpu,
                     "train_batch_size": self.batch_size_per_gpu * accelerator.num_processes,
                 }
                 AcceleratorState().deepspeed_plugin.deepspeed_config_process(
-                    must_match=True, **kwargs
+                    must_match=True,
+                    **kwargs,
                 )
 
             if accelerator.distributed_type in [DistributedType.FSDP, DistributedType.DEEPSPEED]:
@@ -228,17 +244,44 @@ class InternVL3_5(lmms):
 
             self._rank = accelerator.local_process_index
             self._world_size = accelerator.num_processes
-        elif accelerator.num_processes == 1 and device_map == "auto":
-            eval_logger.info(
-                f"Using {accelerator.num_processes} process with model parallel device_map."
-            )
-            self._rank = 0
-            self._world_size = 1
         else:
-            eval_logger.info(f"Using single device: {self._device}")
-            self.model.to(self._device)
             self._rank = 0
             self._world_size = 1
+
+    def _split_model_for_78b(self, config: AutoConfig) -> dict:
+        world_size = torch.cuda.device_count()
+        if world_size < 1:
+            raise RuntimeError("No CUDA devices found for InternVL3-78B.")
+
+        llm_config = getattr(config, "llm_config", config)
+        num_layers = int(getattr(llm_config, "num_hidden_layers"))
+
+        # 官方思路是把 GPU0 视作半张卡，专门承担视觉塔和共享模块，避免跨卡错位。
+        num_layers_per_gpu = math.ceil(num_layers / (world_size - 0.5))
+        num_layers_per_gpu = [num_layers_per_gpu] * world_size
+        num_layers_per_gpu[0] = math.ceil(num_layers_per_gpu[0] * 0.5)
+
+        device_map = {}
+        layer_cnt = 0
+        for i, num_layer in enumerate(num_layers_per_gpu):
+            for _ in range(num_layer):
+                if layer_cnt >= num_layers:
+                    break
+                device_map[f"language_model.model.layers.{layer_cnt}"] = i
+                layer_cnt += 1
+
+        # 这些模块固定到 GPU0 是官方多卡样例的关键，可避免推理时出现 device mismatch。
+        device_map["vision_model"] = 0
+        device_map["mlp1"] = 0
+        device_map["language_model.model.tok_embeddings"] = 0
+        device_map["language_model.model.embed_tokens"] = 0
+        device_map["language_model.output"] = 0
+        device_map["language_model.model.norm"] = 0
+        device_map["language_model.model.rotary_emb"] = 0
+        device_map["language_model.lm_head"] = 0
+        device_map[f"language_model.model.layers.{num_layers - 1}"] = 0
+
+        return device_map
 
     @property
     def config(self):
@@ -277,21 +320,15 @@ class InternVL3_5(lmms):
         return pixel_values.to(device=self.device, dtype=torch.bfloat16, non_blocking=True)
 
     def generate_until(self, requests) -> List[str]:
-        import gc
-
         res = []
         pbar = tqdm(total=len(requests), disable=(self.rank != 0), desc="Model Responding")
 
-        for idx, (contexts, gen_kwargs, doc_to_visual, doc_id, task, split) in enumerate(
-            [reg.args for reg in requests]
-        ):
+        for contexts, gen_kwargs, doc_to_visual, doc_id, task, split in [reg.args for reg in requests]:
+            gen_kwargs = dict(gen_kwargs)
             if "until" in gen_kwargs:
                 gen_kwargs.pop("until")
-
             for k, v in DEFAULT_GEN_KWARGS.items():
                 gen_kwargs.setdefault(k, v)
-
-            # Ensure pad_token_id to avoid transformers spam and potential mismatched padding behavior
             if "pad_token_id" not in gen_kwargs and self.tokenizer.eos_token_id is not None:
                 gen_kwargs["pad_token_id"] = self.tokenizer.eos_token_id
 
@@ -303,40 +340,11 @@ class InternVL3_5(lmms):
             if visuals != [None]:
                 visuals = self.flatten(visuals)
                 if self.modality == "image":
-                    if visuals:
-                        visuals = [self._cast_and_move_pixels(load_image(v)) for v in visuals]
-                        pixel_values = torch.cat(visuals, dim=0)
-                        num_patches_list = [v.size(0) for v in visuals]
-                        image_tokens = " ".join(["<image>"] * len(visuals))
-                        contexts = image_tokens + "\n" + contexts
-                    else:
-                        pixel_values = None
-                        num_patches_list = None
-
-                    response, _ = self.model.chat(
-                        self.tokenizer,
-                        pixel_values,
-                        contexts,
-                        gen_kwargs,
-                        num_patches_list=num_patches_list,
-                        history=None,
-                        return_history=True,
-                    )
-
-                elif self.modality == "video":
-                    assert len(visuals) == 1, f"Only one video is supported, got {len(visuals)}."
-                    video_path = visuals[0]
-                    pixel_values, num_patches_list = load_video(
-                        video_path,
-                        num_segments=self.max_frames_num,
-                        max_num=1,
-                    )
-                    pixel_values = self._cast_and_move_pixels(pixel_values)
-                    video_prefix = "".join(
-                        [f"Frame{i+1}: <image>\n" for i in range(len(num_patches_list))]
-                    )
-                    question = video_prefix + contexts
-
+                    visual_tensors = [self._cast_and_move_pixels(load_video(v, num_segments=1)[0]) for v in visuals]
+                    pixel_values = torch.cat(visual_tensors, dim=0)
+                    num_patches_list = [v.size(0) for v in visual_tensors]
+                    image_tokens = " ".join(["<image>"] * len(visuals))
+                    question = image_tokens + "\n" + contexts
                     response, _ = self.model.chat(
                         self.tokenizer,
                         pixel_values,
@@ -347,7 +355,25 @@ class InternVL3_5(lmms):
                         return_history=True,
                     )
                 else:
-                    raise ValueError(f"Unsupported modality: {self.modality}")
+                    if len(visuals) != 1:
+                        raise ValueError(f"Only one video is supported, got {len(visuals)}.")
+                    pixel_values, num_patches_list = load_video(
+                        visuals[0],
+                        num_segments=self.max_frames_num,
+                        max_num=1,
+                    )
+                    pixel_values = self._cast_and_move_pixels(pixel_values)
+                    video_prefix = "".join([f"Frame{i + 1}: <image>\n" for i in range(len(num_patches_list))])
+                    question = video_prefix + contexts
+                    response, _ = self.model.chat(
+                        self.tokenizer,
+                        pixel_values,
+                        question,
+                        gen_kwargs,
+                        num_patches_list=num_patches_list,
+                        history=None,
+                        return_history=True,
+                    )
             else:
                 response, _ = self.model.chat(
                     self.tokenizer,
@@ -360,15 +386,11 @@ class InternVL3_5(lmms):
                 )
 
             res.append(response)
-
-            if "pixel_values" in locals():
-                del pixel_values
-            gc.collect()
-            torch.cuda.empty_cache()
             pbar.update(1)
 
         pbar.close()
         return res
 
     def loglikelihood(self, requests: List[Instance]) -> List[Tuple[float, bool]]:
-        raise NotImplementedError("InternVL3_5 loglikelihood is not implemented.")
+        raise NotImplementedError("InternVL3-78B loglikelihood is not implemented.")
+

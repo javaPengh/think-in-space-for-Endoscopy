@@ -2,7 +2,7 @@
 
 set -e
 
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5
+export CUDA_VISIBLE_DEVICES=1,2,3,5
 export NCCL_P2P_DISABLE=1
 export NCCL_IB_DISABLE=1
 if [ -z "$CUDA_VISIBLE_DEVICES" ]; then
@@ -24,6 +24,7 @@ wandb_args=""
 use_wandb_args=false
 
 available_models="llava_one_vision_qwen2_0p5b_ov_32f,llava_one_vision_qwen2_7b_ov_32f,llava_next_video_7b_qwen2_32f,llama3_vila1p5_8b_32f,llama3_longvila_8b_128frames_32f,longva_7b_32f,internvl2_2b_8f,internvl2_8b_8f"
+IFS=',' read -r -a models <<<"$available_models"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -59,7 +60,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [ "$models" = "all" ]; then
+if [ "${#models[@]}" -eq 1 ] && [ "${models[0]}" = "all" ]; then
     IFS=',' read -r -a models <<<"$available_models"
 fi
 
@@ -153,11 +154,10 @@ for model in "${models[@]}"; do
         model_args="pretrained=~/.cache/modelscope/hub/models/OpenGVLab/InternVL3_5-8B,modality=video,max_frames_num=$num_frames"
         ;;
     "internvl3_78b_32f")
-        model_family="internvl3_5"
+        model_family="internvl3_78b"
         model="internvl3_78b_${num_frames}f"
-        # 78B 是超大模型，必须开启 device_map=auto 使用模型并行，同时降低数据并行进程为 1 防止 OOM
-        # 显存/内存双重优化：采用 load_in_4bit=True (NF4)，将 78B 权重显存与内存缓冲需求极度压缩
-        model_args="pretrained=~/.cache/modelscope/hub/models/OpenGVLab/InternVL3-78B,modality=video,max_frames_num=16,device_map=auto,load_in_4bit=True"
+        # 78B 优先使用 4bit 量化，进一步压缩显存和主机内存占用。
+        model_args="pretrained=~/.cache/modelscope/hub/models/OpenGVLab/InternVL3-78B,modality=video,max_frames_num=$num_frames,device_map=auto,load_in_4bit=True,use_flash_attn=True"
         num_processes=1
         ;;
     "qwen3vl_8b_32f")
@@ -178,7 +178,7 @@ for model in "${models[@]}"; do
         ;;
     *)
         echo "Unknown model: $model"
-        exit -1
+        exit 1
         ;;
     esac
 
@@ -198,8 +198,8 @@ for model in "${models[@]}"; do
         --model_args $model_args \
         --tasks $benchmark \
         --batch_size 1 \
-#        --log_samples \
-#        --log_samples_suffix $model \
+        --log_samples \
+        --log_samples_suffix $model \
         --output_path $output_path/$benchmark"
 
     if [ "$use_wandb_args" = true ]; then

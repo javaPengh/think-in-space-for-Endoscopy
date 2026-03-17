@@ -47,6 +47,7 @@ AVAILABLE_MODELS = {
     "qwen3vl_32b": "Qwen3VL_32B",
     "qwen3vl_8b_thinking": "Qwen3VL_8B_Thinking",
     "internvl3_5": "InternVL3_5",
+    "internvl3_78b": "InternVL3_78B",
 }
 
 
