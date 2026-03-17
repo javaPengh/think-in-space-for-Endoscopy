@@ -123,6 +123,7 @@ def load_video(
     max_num=1,
     num_segments=32,
     model_name="unknown",
+    version_dir=None,
 ):
     vr = VideoReader(video_path, ctx=cpu(0))
     max_frame = len(vr) - 1
@@ -141,21 +142,21 @@ def load_video(
     # 构建保存目录: sample_frames/{model_name}-{num_segments}f/v_{xx}
     base_model_dir = os.path.join("sample_frames", f"{model_name}-{num_segments}f")
     
-    # 获取或创建当前实例级别的版本目录
-    # 为了在同一个评测任务中保持相同的 v_xx 目录，我们将版本号缓存到 os.environ 中
-    # （因为 load_video 可能是被单独调用的，没有 self 参数传入）
-    env_key = f"SAMPLE_FRAMES_VERSION_{model_name}_{num_segments}"
-    if env_key not in os.environ:
-        os.makedirs(base_model_dir, exist_ok=True)
-        existing_versions = []
-        for d in os.listdir(base_model_dir):
-            if os.path.isdir(os.path.join(base_model_dir, d)) and re.match(r"^v_\d+$", d):
-                existing_versions.append(int(d.split("_")[1]))
+    # 如果没有显式传入 version_dir，则回退到原来的环境变量查找逻辑作为兼容
+    if version_dir is None:
+        env_key = f"SAMPLE_FRAMES_VERSION_{model_name}_{num_segments}"
+        if env_key not in os.environ:
+            os.makedirs(base_model_dir, exist_ok=True)
+            existing_versions = []
+            for d in os.listdir(base_model_dir):
+                if os.path.isdir(os.path.join(base_model_dir, d)) and re.match(r"^v_\d+$", d):
+                    existing_versions.append(int(d.split("_")[1]))
+            
+            next_version = max(existing_versions) + 1 if existing_versions else 1
+            os.environ[env_key] = f"v_{next_version:02d}"
+            
+        version_dir = os.environ[env_key]
         
-        next_version = max(existing_versions) + 1 if existing_versions else 1
-        os.environ[env_key] = f"v_{next_version:02d}"
-        
-    version_dir = os.environ[env_key]
     base_save_dir = os.path.join(base_model_dir, version_dir)
     os.makedirs(base_save_dir, exist_ok=True)
     video_stem = Path(video_path).stem
@@ -200,6 +201,7 @@ class InternVL3_5(lmms):
         self.path = pretrained
         self.modality = modality
         self.max_frames_num = max_frames_num
+        self.sample_frames_version = None
 
         if device_map == 'auto':
             self._model = AutoModel.from_pretrained(
@@ -316,8 +318,45 @@ class InternVL3_5(lmms):
     def _cast_and_move_pixels(self, pixel_values: torch.Tensor):
         return pixel_values.to(device=self.device, dtype=torch.bfloat16, non_blocking=True)
 
+    def _determine_sample_frames_version(self):
+        # 分布式安全地确定 sample_frames 的版本目录 (仅执行一次)
+        import os
+        import re
+        import torch.distributed as dist
+
+        if self.sample_frames_version is not None:
+            return self.sample_frames_version
+
+        extracted_model_name = self.path.split("/")[-1] if "/" in self.path else self.path
+        base_model_dir = os.path.join("sample_frames", f"{extracted_model_name}-{self.max_frames_num}f")
+
+        if self.rank == 0:
+            os.makedirs(base_model_dir, exist_ok=True)
+            existing_versions = []
+            for d in os.listdir(base_model_dir):
+                if os.path.isdir(os.path.join(base_model_dir, d)) and re.match(r"^v_\d+$", d):
+                    existing_versions.append(int(d.split("_")[1]))
+
+            next_version = max(existing_versions) + 1 if existing_versions else 1
+            version_str = f"v_{next_version:02d}"
+            # 提前由主进程创建以避免竞争
+            os.makedirs(os.path.join(base_model_dir, version_str), exist_ok=True)
+            version_obj = [version_str]
+        else:
+            version_obj = [None]
+
+        if self.world_size > 1 and dist.is_initialized():
+            dist.broadcast_object_list(version_obj, src=0)
+
+        self.sample_frames_version = version_obj[0]
+        return self.sample_frames_version
+
     def generate_until(self, requests) -> List[str]:
         import gc
+
+        # 在处理批次前确定好目录版本，确保多进程统一
+        if self.modality == "video":
+            self._determine_sample_frames_version()
 
         res = []
         pbar = tqdm(total=len(requests), disable=(self.rank != 0), desc="Model Responding")
@@ -375,6 +414,7 @@ class InternVL3_5(lmms):
                         num_segments=self.max_frames_num,
                         max_num=1,
                         model_name=extracted_model_name,
+                        version_dir=self.sample_frames_version,
                     )
                     pixel_values = self._cast_and_move_pixels(pixel_values)
                     video_prefix = "".join(

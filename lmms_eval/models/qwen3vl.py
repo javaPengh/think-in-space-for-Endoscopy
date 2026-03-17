@@ -22,7 +22,7 @@ DEFAULT_GEN_KWARGS = dict(
 )
 
 
-@register_model("qwen3vl")
+@register_model("qwen3vl", "qwen3vl_32b")
 class Qwen3VL(lmms):
     def __init__(
         self,
@@ -97,6 +97,7 @@ class Qwen3VL(lmms):
         self.modality = modality
         self.max_frames_num = max_frames_num
         self.max_pixels = max_pixels
+        self.sample_frames_version = None
 
     @property
     def config(self):
@@ -132,7 +133,44 @@ class Qwen3VL(lmms):
                 new_list.append(j)
         return new_list
 
+    def _determine_sample_frames_version(self):
+        # 分布式安全地确定 sample_frames 的版本目录 (仅执行一次)
+        import os
+        import re
+        import torch.distributed as dist
+
+        if self.sample_frames_version is not None:
+            return self.sample_frames_version
+
+        extracted_model_name = self.path.split("/")[-1] if "/" in self.path else self.path
+        base_model_dir = os.path.join("sample_frames", f"{extracted_model_name}-{self.max_frames_num}f")
+
+        if self.rank == 0:
+            os.makedirs(base_model_dir, exist_ok=True)
+            existing_versions = []
+            for d in os.listdir(base_model_dir):
+                if os.path.isdir(os.path.join(base_model_dir, d)) and re.match(r"^v_\d+$", d):
+                    existing_versions.append(int(d.split("_")[1]))
+
+            next_version = max(existing_versions) + 1 if existing_versions else 1
+            version_str = f"v_{next_version:02d}"
+            # 提前由主进程创建以避免竞争
+            os.makedirs(os.path.join(base_model_dir, version_str), exist_ok=True)
+            version_obj = [version_str]
+        else:
+            version_obj = [None]
+
+        if self.world_size > 1 and dist.is_initialized():
+            dist.broadcast_object_list(version_obj, src=0)
+
+        self.sample_frames_version = version_obj[0]
+        return self.sample_frames_version
+
     def generate_until(self, requests) -> List[str]:
+        # 在处理批次前确定好目录版本，确保多进程统一
+        if self.modality == "video":
+            self._determine_sample_frames_version()
+
         res = []
         pbar = tqdm(total=len(requests), disable=(self.rank != 0), desc="Model Responding")
 
@@ -172,10 +210,8 @@ class Qwen3VL(lmms):
                 
                 # 不依赖底层对于 `video` 路径的处理。我们将严格依据索引拉取图像矩阵并转存传递。
                 from PIL import Image
-                import tempfile
-                import uuid
                 
-                frames = vr.get_batch(frame_indices).asnumpy()
+                frames = vr.get_batch(frame_indices).numpy()
                 del vr  # 释放内存与文件句柄
 
                 # 将截取的帧存成特定格式交给官方组件解析。Qwen 的 qwen_vl_utils 支持 
@@ -184,25 +220,13 @@ class Qwen3VL(lmms):
                 
                 # ====== 持久化保存到 sample_frames 目录 ======
                 from pathlib import Path
-                import re
                 
                 extracted_model_name = self.path.split("/")[-1] if "/" in self.path else self.path
                 base_model_dir = os.path.join("sample_frames", f"{extracted_model_name}-{self.max_frames_num}f")
                 
-                env_key = f"SAMPLE_FRAMES_VERSION_{extracted_model_name}_{self.max_frames_num}"
-                if env_key not in os.environ:
-                    os.makedirs(base_model_dir, exist_ok=True)
-                    existing_versions = []
-                    for d in os.listdir(base_model_dir):
-                        if os.path.isdir(os.path.join(base_model_dir, d)) and re.match(r"^v_\d+$", d):
-                            existing_versions.append(int(d.split("_")[1]))
-                    
-                    next_version = max(existing_versions) + 1 if existing_versions else 1
-                    os.environ[env_key] = f"v_{next_version:02d}"
-                    
-                version_dir = os.environ[env_key]
+                version_dir = self.sample_frames_version
                 base_save_dir = os.path.join(base_model_dir, version_dir)
-                os.makedirs(base_save_dir, exist_ok=True)
+                os.makedirs(base_save_dir, exist_ok=True) # 仅防万一，Rank 0 已创建
                 video_stem = Path(video_path).stem
                 
                 frame_paths = []
