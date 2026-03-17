@@ -122,6 +122,7 @@ def load_video(
     input_size=448,
     max_num=1,
     num_segments=32,
+    model_name="unknown",
 ):
     vr = VideoReader(video_path, ctx=cpu(0))
     max_frame = len(vr) - 1
@@ -131,8 +132,47 @@ def load_video(
     transform = build_transform(input_size=input_size)
     frame_indices = get_index(bound, fps, max_frame, first_idx=0, num_segments=num_segments)
 
+    # ====== 新增：持久化保存采样帧用于分析 ======
+    import os
+    from pathlib import Path
+    import cv2
+    import re
+    
+    # 构建保存目录: sample_frames/{model_name}-{num_segments}f/v_{xx}
+    base_model_dir = os.path.join("sample_frames", f"{model_name}-{num_segments}f")
+    
+    # 获取或创建当前实例级别的版本目录
+    # 为了在同一个评测任务中保持相同的 v_xx 目录，我们将版本号缓存到 os.environ 中
+    # （因为 load_video 可能是被单独调用的，没有 self 参数传入）
+    env_key = f"SAMPLE_FRAMES_VERSION_{model_name}_{num_segments}"
+    if env_key not in os.environ:
+        os.makedirs(base_model_dir, exist_ok=True)
+        existing_versions = []
+        for d in os.listdir(base_model_dir):
+            if os.path.isdir(os.path.join(base_model_dir, d)) and re.match(r"^v_\d+$", d):
+                existing_versions.append(int(d.split("_")[1]))
+        
+        next_version = max(existing_versions) + 1 if existing_versions else 1
+        os.environ[env_key] = f"v_{next_version:02d}"
+        
+    version_dir = os.environ[env_key]
+    base_save_dir = os.path.join(base_model_dir, version_dir)
+    os.makedirs(base_save_dir, exist_ok=True)
+    video_stem = Path(video_path).stem
+    # ============================================
+
     for frame_index in frame_indices:
         frame_np = vr[frame_index].asnumpy()
+        
+        # 保存当前帧为图像
+        try:
+            frame_file = f"{video_stem}_frame{frame_index:04d}.jpg"
+            save_path = os.path.join(base_save_dir, frame_file)
+            # frame_np 是 RGB 格式，cv2 需要 BGR
+            cv2.imwrite(save_path, cv2.cvtColor(frame_np, cv2.COLOR_RGB2BGR))
+        except Exception as e:
+            eval_logger.warning(f"Failed to save sampled frame {frame_index}: {e}")
+            
         img = Image.fromarray(frame_np).convert("RGB")
         tiles = dynamic_preprocess(img, image_size=input_size, use_thumbnail=True, max_num=max_num)
         pixel_values = [transform(tile) for tile in tiles]
@@ -326,10 +366,15 @@ class InternVL3_5(lmms):
                 elif self.modality == "video":
                     assert len(visuals) == 1, f"Only one video is supported, got {len(visuals)}."
                     video_path = visuals[0]
+                    
+                    # 提取模型名称用于建立对应目录，例如从 "OpenGVLab/InternVL-3.5-2B" 中提取 "InternVL-3.5-2B"
+                    extracted_model_name = self.path.split("/")[-1] if "/" in self.path else self.path
+                    
                     pixel_values, num_patches_list = load_video(
                         video_path,
                         num_segments=self.max_frames_num,
                         max_num=1,
+                        model_name=extracted_model_name,
                     )
                     pixel_values = self._cast_and_move_pixels(pixel_values)
                     video_prefix = "".join(

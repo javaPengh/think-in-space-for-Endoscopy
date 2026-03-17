@@ -161,6 +161,11 @@ class Qwen3VL_32B(lmms):
                 # ================= 正确的视觉参数传入方式与严谨抽帧 =================
                 # 为了不依赖 qwen_vl_utils 底层的黑盒抽帧，确保无论视频多长都绝对均匀抽取指定帧数
                 # 尤其针对医学视频评估中时序连贯性的严谨要求，这里显式使用
+                import decord
+                import numpy as np
+                decord.bridge.set_bridge("torch")
+                vr = decord.VideoReader(video_path, num_threads=1)
+                total_frames = len(vr)
                 frame_indices = np.linspace(0, total_frames - 1, self.max_frames_num, dtype=int).tolist()
                 
                 # 不依赖底层对于 `video` 路径的处理。我们将严格依据索引拉取图像矩阵并转存传递。
@@ -174,14 +179,36 @@ class Qwen3VL_32B(lmms):
                 # 将截取的帧存成特定格式交给官方组件解析。Qwen 的 qwen_vl_utils 支持 
                 # {"type": "video", "video": [ "path/to/frame1.jpg", "path/to/frame2.jpg", ... ]}
                 # 这样它就会将这些帧组装为连续时序视频而不再去利用 cv2/av 等库对单一视频文件盲目抽帧
-                temp_dir = tempfile.gettempdir()
-                unique_session = str(uuid.uuid4())[:8]
+                
+                # ====== 持久化保存到 sample_frames 目录 ======
+                from pathlib import Path
+                import re
+                
+                extracted_model_name = self.path.split("/")[-1] if "/" in self.path else self.path
+                base_model_dir = os.path.join("sample_frames", f"{extracted_model_name}-{self.max_frames_num}f")
+                
+                env_key = f"SAMPLE_FRAMES_VERSION_{extracted_model_name}_{self.max_frames_num}"
+                if env_key not in os.environ:
+                    os.makedirs(base_model_dir, exist_ok=True)
+                    existing_versions = []
+                    for d in os.listdir(base_model_dir):
+                        if os.path.isdir(os.path.join(base_model_dir, d)) and re.match(r"^v_\d+$", d):
+                            existing_versions.append(int(d.split("_")[1]))
+                    
+                    next_version = max(existing_versions) + 1 if existing_versions else 1
+                    os.environ[env_key] = f"v_{next_version:02d}"
+                    
+                version_dir = os.environ[env_key]
+                base_save_dir = os.path.join(base_model_dir, version_dir)
+                os.makedirs(base_save_dir, exist_ok=True)
+                video_stem = Path(video_path).stem
+                
                 frame_paths = []
                 for idx, frame_arr in enumerate(frames):
                     img = Image.fromarray(frame_arr)
-                    tmp_path = os.path.join(temp_dir, f"qwen3vl_32b_eval_{unique_session}_frame_{idx:04d}.jpg")
-                    img.save(tmp_path, format="JPEG", quality=95)
-                    frame_paths.append(tmp_path)
+                    save_path = os.path.join(base_save_dir, f"{video_stem}_frame{idx:04d}.jpg")
+                    img.save(save_path, format="JPEG", quality=95)
+                    frame_paths.append(save_path)
                 
                 # 这种传法彻底锁死了视频内容为我们手动截取的 32 帧
                 video_content = {
@@ -241,13 +268,7 @@ class Qwen3VL_32B(lmms):
                 # 3. 强制 PyTorch 清空 CUDA 缓存池，把显存还给操作系统
                 torch.cuda.empty_cache()
                 
-                # 4. 清理由于严谨抽帧生成的临时图片文件
-                for tmp_p in frame_paths:
-                    if os.path.exists(tmp_p):
-                        try:
-                            os.remove(tmp_p)
-                        except Exception:
-                            pass
+                # 4. 临时文件清理步骤已移除，因为我们现在将帧持久化保存到 sample_frames 中以供分析。
                 # ==========================================================
             else:
                 raise NotImplementedError

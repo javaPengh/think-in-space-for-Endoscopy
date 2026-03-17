@@ -175,20 +175,42 @@ class Qwen3VL(lmms):
                 import tempfile
                 import uuid
                 
-                frames = vr.get_batch(frame_indices).numpy()
+                frames = vr.get_batch(frame_indices).asnumpy()
                 del vr  # 释放内存与文件句柄
 
                 # 将截取的帧存成特定格式交给官方组件解析。Qwen 的 qwen_vl_utils 支持 
                 # {"type": "video", "video": [ "path/to/frame1.jpg", "path/to/frame2.jpg", ... ]}
                 # 这样它就会将这些帧组装为连续时序视频而不再去利用 cv2/av 等库对单一视频文件盲目抽帧
-                temp_dir = tempfile.gettempdir()
-                unique_session = str(uuid.uuid4())[:8]
+                
+                # ====== 持久化保存到 sample_frames 目录 ======
+                from pathlib import Path
+                import re
+                
+                extracted_model_name = self.path.split("/")[-1] if "/" in self.path else self.path
+                base_model_dir = os.path.join("sample_frames", f"{extracted_model_name}-{self.max_frames_num}f")
+                
+                env_key = f"SAMPLE_FRAMES_VERSION_{extracted_model_name}_{self.max_frames_num}"
+                if env_key not in os.environ:
+                    os.makedirs(base_model_dir, exist_ok=True)
+                    existing_versions = []
+                    for d in os.listdir(base_model_dir):
+                        if os.path.isdir(os.path.join(base_model_dir, d)) and re.match(r"^v_\d+$", d):
+                            existing_versions.append(int(d.split("_")[1]))
+                    
+                    next_version = max(existing_versions) + 1 if existing_versions else 1
+                    os.environ[env_key] = f"v_{next_version:02d}"
+                    
+                version_dir = os.environ[env_key]
+                base_save_dir = os.path.join(base_model_dir, version_dir)
+                os.makedirs(base_save_dir, exist_ok=True)
+                video_stem = Path(video_path).stem
+                
                 frame_paths = []
                 for idx, frame_arr in enumerate(frames):
                     img = Image.fromarray(frame_arr)
-                    tmp_path = os.path.join(temp_dir, f"qwen3vl_eval_{unique_session}_frame_{idx:04d}.jpg")
-                    img.save(tmp_path, format="JPEG", quality=95)
-                    frame_paths.append(tmp_path)
+                    save_path = os.path.join(base_save_dir, f"{video_stem}_frame{idx:04d}.jpg")
+                    img.save(save_path, format="JPEG", quality=95)
+                    frame_paths.append(save_path)
                 
                 # 这种传法彻底锁死了视频内容为我们手动截取的帧数
                 video_content = {
@@ -248,13 +270,6 @@ class Qwen3VL(lmms):
                 # 3. 强制 PyTorch 清空 CUDA 缓存池，把显存还给操作系统
                 torch.cuda.empty_cache()
                 
-                # 4. 清理由于严谨抽帧生成的临时图片文件
-                for tmp_p in frame_paths:
-                    if os.path.exists(tmp_p):
-                        try:
-                            os.remove(tmp_p)
-                        except Exception:
-                            pass
                 # ==========================================================
             else:
                 raise NotImplementedError
