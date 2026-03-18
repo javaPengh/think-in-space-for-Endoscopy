@@ -22,7 +22,7 @@ DEFAULT_GEN_KWARGS = dict(
 )
 
 
-@register_model("qwen3vl", "qwen3vl_32b")
+@register_model("qwen3vl")
 class Qwen3VL(lmms):
     def __init__(
         self,
