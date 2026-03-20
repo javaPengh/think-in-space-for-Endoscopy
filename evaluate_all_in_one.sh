@@ -2,7 +2,7 @@
 
 set -e
 
-export CUDA_VISIBLE_DEVICES=1,2,3,5
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5
 export NCCL_P2P_DISABLE=1
 export NCCL_IB_DISABLE=1
 if [ -z "$CUDA_VISIBLE_DEVICES" ]; then
@@ -18,10 +18,11 @@ export GOOGLE_API_KEY="" # API KEY FOR GOGOLE GEMINI
 benchmark=vsibench
 output_path=logs/$(TZ="America/New_York" date "+%Y%m%d")
 num_processes=4
-num_frames=32
+num_frames=16
 launcher=accelerate
 wandb_args=""
 use_wandb_args=false
+video_sampling_strategy="uniform"
 
 available_models="llava_one_vision_qwen2_0p5b_ov_32f,llava_one_vision_qwen2_7b_ov_32f,llava_next_video_7b_qwen2_32f,llama3_vila1p5_8b_32f,llama3_longvila_8b_128frames_32f,longva_7b_32f,internvl2_2b_8f,internvl2_8b_8f"
 IFS=',' read -r -a models <<<"$available_models"
@@ -51,6 +52,10 @@ while [[ $# -gt 0 ]]; do
     --wandb_args)
         use_wandb_args=true
         wandb_args="$2"
+        shift 2
+        ;;
+    --video_sampling_strategy)
+        video_sampling_strategy="$2"
         shift 2
         ;;
     *)
@@ -181,6 +186,11 @@ for model in "${models[@]}"; do
         exit 1
         ;;
     esac
+
+    # Add sampling strategy into model_args
+    if [ "$video_sampling_strategy" = "specific" ]; then
+        model_args="$model_args,video_sampling_strategy=specific,keyframe_mapping_path=data/keyframe_mapping.json"
+    fi
 
     if [ "$launcher" = "python" ]; then
         export LMMS_EVAL_LAUNCHER="python"

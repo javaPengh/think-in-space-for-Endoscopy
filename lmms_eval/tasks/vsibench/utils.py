@@ -11,16 +11,16 @@ from collections import OrderedDict
 import datasets
 
 MCA_QUESTION_TYPES = [
-    "object_rel_direction_easy",
-    "object_rel_direction_medium",
-    "object_rel_direction_hard",
-    "object_rel_distance",
-    "route_planning",
-    "obj_appearance_order",
+    # "object_rel_direction_easy",
+    # "object_rel_direction_medium",
+    # "object_rel_direction_hard",
+    # "object_rel_distance",
+    # "route_planning",
+    # "obj_appearance_order",
 ]
 NA_QUESTION_TYPES = [
-    "object_abs_distance",
-    "object_counting",
+    # "object_abs_distance",
+    # "object_counting",
     "object_size_estimation",
     # "room_size_estimation",
 ]
@@ -158,14 +158,14 @@ def vsibench_aggregate_results(results):
     results["overall"] = output["overall"].item() * 100.
     
     for question_type in [
-        "object_counting",
-        "object_abs_distance",
+        # "object_counting",
+        # "object_abs_distance",
         "object_size_estimation",
         # "room_size_estimation",
-        "object_rel_distance",
-        "object_rel_direction",
-        "route_planning",
-        "obj_appearance_order",
+        # "object_rel_distance",
+        # "object_rel_direction",
+        # "route_planning",
+        # "obj_appearance_order",
     ]:
         for metric in [
             "accuracy",

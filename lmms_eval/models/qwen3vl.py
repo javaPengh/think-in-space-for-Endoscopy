@@ -33,9 +33,20 @@ class Qwen3VL(lmms):
         batch_size: str = "1",
         max_frames_num: int = 32,
         max_pixels: int = 602112,
+        video_sampling_strategy: str = "uniform",
+        keyframe_mapping_path: str = "data/keyframe_mapping.json",
         **kwargs,
     ):
         super().__init__()
+
+        self.video_sampling_strategy = video_sampling_strategy
+        self.keyframe_mapping = {}
+        if self.video_sampling_strategy == "specific":
+            if not os.path.exists(keyframe_mapping_path):
+                raise ValueError(f"Keyframe mapping file not found at {keyframe_mapping_path}. Required when video_sampling_strategy is 'specific'.")
+            import json
+            with open(keyframe_mapping_path, "r", encoding="utf-8") as f:
+                self.keyframe_mapping = json.load(f)
 
         self.path = pretrained
 
@@ -205,8 +216,31 @@ class Qwen3VL(lmms):
                 vr = decord.VideoReader(video_path, num_threads=1)
                 total_frames = len(vr)
                 
-                # 计算绝对均匀的帧索引
-                frame_indices = np.linspace(0, total_frames - 1, self.max_frames_num, dtype=int).tolist()
+                if self.video_sampling_strategy == "specific":
+                    # 获取真实的题目 ID
+                    doc_data = self.task_dict[task][split][doc_id]
+                    question_key = None
+                    for possible_key in ["question_id", "id", "ID", "Question_ID", "questionId"]:
+                        if possible_key in doc_data:
+                            question_key = str(doc_data[possible_key])
+                            break
+                    
+                    if question_key is None:
+                        question_key = str(doc_id)  # fallback
+                    
+                    # 尝试扁平化搜索
+                    found_indices = None
+                    for dataset_name, questions in self.keyframe_mapping.items():
+                        if question_key in questions:
+                            found_indices = questions[question_key]
+                            break
+                    
+                    if found_indices is None or len(found_indices) == 0:
+                        raise ValueError(f"Specific frame indices not found or empty for question ID: {question_key} (doc_id: {doc_id}) in {task}")
+                    frame_indices = found_indices
+                else:
+                    # 计算绝对均匀的帧索引
+                    frame_indices = np.linspace(0, total_frames - 1, self.max_frames_num, dtype=int).tolist()
                 
                 # 不依赖底层对于 `video` 路径的处理。我们将严格依据索引拉取图像矩阵并转存传递。
                 from PIL import Image

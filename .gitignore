@@ -34,7 +34,6 @@ LLaVA/
 temp/
 InternVL/
 logs/
-data/
 llava-video/
 Video-MME/
 VATEX/

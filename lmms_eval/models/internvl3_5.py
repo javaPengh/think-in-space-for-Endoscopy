@@ -124,6 +124,10 @@ def load_video(
     num_segments=32,
     model_name="unknown",
     version_dir=None,
+    video_sampling_strategy="uniform",
+    keyframe_mapping=None,
+    question_key=None,
+    task=None,
 ):
     vr = VideoReader(video_path, ctx=cpu(0))
     max_frame = len(vr) - 1
@@ -131,7 +135,19 @@ def load_video(
 
     pixel_values_list, num_patches_list = [], []
     transform = build_transform(input_size=input_size)
-    frame_indices = get_index(bound, fps, max_frame, first_idx=0, num_segments=num_segments)
+    
+    if video_sampling_strategy == "specific":
+        found_indices = None
+        if keyframe_mapping and question_key is not None:
+            for dataset_name, questions in keyframe_mapping.items():
+                if question_key in questions:
+                    found_indices = questions[question_key]
+                    break
+        if found_indices is None or len(found_indices) == 0:
+            raise ValueError(f"Specific frame indices not found or empty for question ID: {question_key} in {task}")
+        frame_indices = found_indices
+    else:
+        frame_indices = get_index(bound, fps, max_frame, first_idx=0, num_segments=num_segments)
 
     # ====== 新增：持久化保存采样帧用于分析 ======
     import os
@@ -195,6 +211,8 @@ class InternVL3_5(lmms):
         device_map: str = "cuda:0",
         batch_size: str = "1",
         max_frames_num: int = 32,
+        video_sampling_strategy: str = "uniform",
+        keyframe_mapping_path: str = "data/keyframe_mapping.json",
         **kwargs,
     ):
         super().__init__()
@@ -202,6 +220,15 @@ class InternVL3_5(lmms):
         self.modality = modality
         self.max_frames_num = max_frames_num
         self.sample_frames_version = None
+        self.video_sampling_strategy = video_sampling_strategy
+        self.keyframe_mapping = {}
+        if self.video_sampling_strategy == "specific":
+            import os
+            if not os.path.exists(keyframe_mapping_path):
+                raise ValueError(f"Keyframe mapping file not found at {keyframe_mapping_path}. Required when video_sampling_strategy is 'specific'.")
+            import json
+            with open(keyframe_mapping_path, "r", encoding="utf-8") as f:
+                self.keyframe_mapping = json.load(f)
 
         if device_map == 'auto':
             self._model = AutoModel.from_pretrained(
@@ -409,12 +436,25 @@ class InternVL3_5(lmms):
                     # 提取模型名称用于建立对应目录，例如从 "OpenGVLab/InternVL-3.5-2B" 中提取 "InternVL-3.5-2B"
                     extracted_model_name = self.path.split("/")[-1] if "/" in self.path else self.path
                     
+                    doc_data = self.task_dict[task][split][doc_id]
+                    question_key = None
+                    for possible_key in ["question_id", "id", "ID", "Question_ID", "questionId"]:
+                        if possible_key in doc_data:
+                            question_key = str(doc_data[possible_key])
+                            break
+                    if question_key is None:
+                        question_key = str(doc_id)
+                    
                     pixel_values, num_patches_list = load_video(
                         video_path,
                         num_segments=self.max_frames_num,
                         max_num=1,
                         model_name=extracted_model_name,
                         version_dir=self.sample_frames_version,
+                        video_sampling_strategy=self.video_sampling_strategy,
+                        keyframe_mapping=self.keyframe_mapping,
+                        question_key=question_key,
+                        task=task,
                     )
                     pixel_values = self._cast_and_move_pixels(pixel_values)
                     video_prefix = "".join(

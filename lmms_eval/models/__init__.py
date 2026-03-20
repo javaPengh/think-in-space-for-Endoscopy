@@ -44,9 +44,8 @@ AVAILABLE_MODELS = {
     "xcomposer2d5": "XComposer2D5",
     "qwen2vl": "Qwen2VL",
     "qwen3vl": "Qwen3VL",
-    "qwen3vl_8b_thinking": "Qwen3VL_8B_Thinking",
+    "qwen3vl_32b": "Qwen3VL_32B",
     "internvl3_5": "InternVL3_5",
-    "internvl3_78b": "InternVL3_78B",
 }
 
 
