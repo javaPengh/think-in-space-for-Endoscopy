@@ -2,7 +2,7 @@
 
 set -e
 
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5
+export CUDA_VISIBLE_DEVICES=1,2
 export NCCL_P2P_DISABLE=1
 export NCCL_IB_DISABLE=1
 if [ -z "$CUDA_VISIBLE_DEVICES" ]; then
@@ -99,6 +99,11 @@ for model in "${models[@]}"; do
         model="llava_one_vision_qwen2_7b_ov_${num_frames}f"
         model_args="pretrained=lmms-lab/llava-onevision-qwen2-7b-ov,conv_template=qwen_1_5,model_name=llava_qwen,max_frames_num=$num_frames"
         ;;
+    "llava_one_vision_1_5_8b_32f")
+        model_family="llava_onevision_1_5"
+        model="llava_one_vision_1_5_8b_${num_frames}f"
+        model_args="pretrained=~/.cache/modelscope/hub/models/lmms-lab/LLaVA-OneVision-1.5-8B-Instruct,attn_implementation=flash_attention_2,conv_template=qwen_1_5,model_name=llava_qwen,max_frames_num=$num_frames,max_pixels=602112,device_map=auto"
+        ;;
     "llava_one_vision_qwen2_72b_ov_32f")
         model_family="llava_onevision"
         model_args="pretrained=lmms-lab/llava-onevision-qwen2-72b-ov-sft,conv_template=qwen_1_5,model_name=llava_qwen,max_frames_num=32,device_map=auto"
@@ -158,13 +163,6 @@ for model in "${models[@]}"; do
         # 8B 模型依然可以在多卡数据并行（num_processes=4）下良好运行
         model_args="pretrained=~/.cache/modelscope/hub/models/OpenGVLab/InternVL3_5-8B,modality=video,max_frames_num=$num_frames"
         ;;
-    "internvl3_78b_32f")
-        model_family="internvl3_78b"
-        model="internvl3_78b_${num_frames}f"
-        # 78B 优先使用 4bit 量化，进一步压缩显存和主机内存占用。
-        model_args="pretrained=~/.cache/modelscope/hub/models/OpenGVLab/InternVL3-78B,modality=video,max_frames_num=$num_frames,device_map=auto,load_in_4bit=True,use_flash_attn=True"
-        num_processes=1
-        ;;
     "qwen3vl_8b_32f")
         model_family="qwen3vl"
         model="qwen3vl_8b_${num_frames}f"
@@ -176,10 +174,10 @@ for model in "${models[@]}"; do
         model_args="pretrained=~/.cache/modelscope/hub/models/Qwen/Qwen3-VL-32B-Instruct,modality=video,max_frames_num=$num_frames,device_map=auto"
         num_processes=1
         ;;
-    "qwen3vl_8b_thinking_32f")
-        model_family="qwen3vl_8b_thinking"
-        model="qwen3vl_8b_thinking_${num_frames}f"
-        model_args="pretrained=~/.cache/modelscope/hub/models/Qwen/Qwen3-VL-8B-Thinking,modality=video,max_frames_num=$num_frames"
+    "internvideo2_5_chat_8b_32f")
+        model_family="internvideo2_5_chat_8b"
+        model="internvideo2_5_chat_8b_${num_frames}f"
+        model_args="pretrained=~/.cache/modelscope/hub/models/OpenGVLab/InternVideo2_5_Chat_8B,modality=video,max_frames_num=$num_frames"
         ;;
     *)
         echo "Unknown model: $model"

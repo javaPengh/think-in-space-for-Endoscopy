@@ -25,6 +25,7 @@ AVAILABLE_MODELS = {
     "llava": "Llava",
     "llava_hf": "LlavaHf",
     "llava_onevision": "Llava_OneVision",
+    "llava_onevision_1_5": "Llava_OneVision_1_5",
     "llava_sglang": "LlavaSglang",
     "llava_vid": "LlavaVid",
     "longva": "LongVA",
@@ -46,6 +47,7 @@ AVAILABLE_MODELS = {
     "qwen3vl": "Qwen3VL",
     "qwen3vl_32b": "Qwen3VL_32B",
     "internvl3_5": "InternVL3_5",
+    "internvideo2_5_chat_8b": "InternVideo2_5_Chat",
 }
 
 
