@@ -10,6 +10,9 @@ from collections import OrderedDict
 
 import datasets
 
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
+
 MCA_QUESTION_TYPES = [
     # "object_rel_direction_easy",
     # "object_rel_direction_medium",
@@ -33,6 +36,19 @@ METRICS_FOR_NA = {
     "MRA:.5:.95:.05": "partial(mean_relative_accuracy, start=.5, end=.95, interval=.05)",
 }
 
+ANSWER_TYPE_MULTIPLE_CHOICE = "multiple_choice"
+ANSWER_TYPE_NUMERIC = "numeric"
+ANSWER_TYPE_ALIASES = {
+    "mca": ANSWER_TYPE_MULTIPLE_CHOICE,
+    "mcq": ANSWER_TYPE_MULTIPLE_CHOICE,
+    "multiple_choice": ANSWER_TYPE_MULTIPLE_CHOICE,
+    "choice": ANSWER_TYPE_MULTIPLE_CHOICE,
+    "na": ANSWER_TYPE_NUMERIC,
+    "numeric": ANSWER_TYPE_NUMERIC,
+    "number": ANSWER_TYPE_NUMERIC,
+    "numerical": ANSWER_TYPE_NUMERIC,
+}
+
 
 hf_home = os.getenv("HF_HOME", "~/.cache/huggingface/")
 base_cache_dir = os.path.expanduser(hf_home)
@@ -45,32 +61,96 @@ with open(Path(__file__).parent / "vsibench.yaml", "r") as f:
 cache_name = yaml.safe_load("".join(safe_data))["dataset_kwargs"]["cache_dir"]
 
 
+def _doc_value(doc, key, default=None):
+    value = doc[key] if key in doc else default
+    return default if value is None else value
+
+
+def _normalize_media_type(media_type, media_path):
+    media_type = str(media_type).lower().strip() if media_type is not None else ""
+    if media_type in {"image", "video"}:
+        return media_type
+
+    suffix = Path(str(media_path)).suffix.lower()
+    if suffix in IMAGE_EXTENSIONS:
+        return "image"
+    if suffix in VIDEO_EXTENSIONS:
+        return "video"
+    raise ValueError(f"Cannot infer media_type for media path: {media_path}")
+
+
+def _resolve_media_path(media_path, cache_dir):
+    media_path = os.path.expanduser(str(media_path))
+    if os.path.isabs(media_path):
+        return media_path
+    return os.path.join(cache_dir, media_path)
+
+
+def _doc_media_type(doc):
+    media_path = _doc_value(doc, "media_path")
+    if media_path:
+        return _normalize_media_type(_doc_value(doc, "media_type"), media_path)
+    return "video"
+
+
+def _doc_answer_type(doc):
+    raw_answer_type = _doc_value(doc, "answer_type")
+    if raw_answer_type is not None and str(raw_answer_type).strip():
+        normalized_answer_type = ANSWER_TYPE_ALIASES.get(str(raw_answer_type).lower().strip())
+        if normalized_answer_type is None:
+            raise ValueError(f"Unknown answer_type: {raw_answer_type}")
+        return normalized_answer_type
+
+    question_type = doc["question_type"]
+    if question_type in MCA_QUESTION_TYPES:
+        return ANSWER_TYPE_MULTIPLE_CHOICE
+    if question_type in NA_QUESTION_TYPES:
+        return ANSWER_TYPE_NUMERIC
+    raise ValueError(f"Unknown question type without answer_type: {question_type}")
+
+
+def _metrics_for_answer_type(answer_type):
+    if answer_type == ANSWER_TYPE_MULTIPLE_CHOICE:
+        return METRICS_FOR_MCA
+    if answer_type == ANSWER_TYPE_NUMERIC:
+        return METRICS_FOR_NA
+    raise ValueError(f"Unknown normalized answer_type: {answer_type}")
+
+
 def vsibench_doc_to_visual(doc):
     cache_dir = os.path.join(base_cache_dir, cache_name)
-    # video_path = doc["dataset"] + "/" + str(doc["scene_name"]) + ".mp4"
-    video_path = doc["dataset"] + "/" + doc["scene_name"] + ".mp4"
-    video_path = os.path.join(cache_dir, video_path)
-    if os.path.exists(video_path):
-        video_path = video_path
+
+    media_path = _doc_value(doc, "media_path")
+    if media_path:
+        media_type = _normalize_media_type(_doc_value(doc, "media_type"), media_path)
+        abs_media_path = _resolve_media_path(media_path, cache_dir)
+        if not os.path.exists(abs_media_path):
+            raise FileExistsError(f"{media_type} path:{abs_media_path} does not exist.")
+        return [{"media_type": media_type, "path": abs_media_path}]
     else:
-        raise FileExistsError(f"video path:{video_path} does not exist.")
-    return [video_path]
+        abs_media_path = os.path.join(cache_dir, doc["dataset"], doc["scene_name"] + ".mp4")
+        if not os.path.exists(abs_media_path):
+            raise FileExistsError(f"video path:{abs_media_path} does not exist.")
+        return [abs_media_path]
 
 
 def vsibench_doc_to_text(doc, lmms_eval_specific_kwargs=None):
+    lmms_eval_specific_kwargs = lmms_eval_specific_kwargs or {}
     question = doc["question"]
-        
-    pre_prompt = lmms_eval_specific_kwargs.get("pre_prompt", "") or "These are frames of a video."
+
+    default_pre_prompt = "This is an image." if _doc_media_type(doc) == "image" else "These are frames of a video."
+    pre_prompt = lmms_eval_specific_kwargs.get("pre_prompt", "") or default_pre_prompt
     
-    if doc['question_type'] in NA_QUESTION_TYPES:
+    answer_type = _doc_answer_type(doc)
+    if answer_type == ANSWER_TYPE_NUMERIC:
         post_prompt = lmms_eval_specific_kwargs.get("na_post_prompt", "") or "Please answer the question using a single word or phrase."
         return pre_prompt + "\n" + question + "\n" + post_prompt
-    elif doc['question_type'] in MCA_QUESTION_TYPES:
+    elif answer_type == ANSWER_TYPE_MULTIPLE_CHOICE:
         options = "Options:\n" + "\n".join(doc["options"])
         post_prompt = lmms_eval_specific_kwargs.get("mca_post_prompt", "") or "Answer with the option's letter from the given choices directly."
         return "\n".join([pre_prompt, question, options, post_prompt])
     else:
-        raise ValueError(f"Unknown question type: {doc['question_type']}")
+        raise ValueError(f"Unknown answer type: {answer_type}")
 
 
 def process_docs(dataset: datasets.Dataset) -> datasets.Dataset:
@@ -109,17 +189,19 @@ def to_float(pred):
 def vsibench_process_results(doc, results):
     
     doc['prediction'] = results[0]
-    if doc['question_type'] in MCA_QUESTION_TYPES:
+    doc['media_type'] = _doc_media_type(doc)
+    doc['answer_type'] = _doc_answer_type(doc)
+    if doc['answer_type'] == ANSWER_TYPE_MULTIPLE_CHOICE:
         for key, value in METRICS_FOR_MCA.items():
             doc[key] = eval(value)(fuzzy_matching(doc['prediction']), doc['ground_truth'])
-    elif doc['question_type'] in NA_QUESTION_TYPES:
+    elif doc['answer_type'] == ANSWER_TYPE_NUMERIC:
         for key, value in METRICS_FOR_NA.items():
             try:
                 doc[key] = eval(value)(to_float(fuzzy_matching(doc['prediction'])), to_float(doc['ground_truth']))
             except TypeError:
                 doc[key] = WORST_CASE_FOR_METRICS[key]
     else:
-        raise ValueError(f"Unknown question type: {doc['question_type']}")
+        raise ValueError(f"Unknown answer type: {doc['answer_type']}")
 
     return {"vsibench_score": doc}
 
@@ -130,19 +212,18 @@ def vsibench_aggregate_results(results):
 
     for question_type, question_type_indexes in results.groupby('question_type').groups.items():
         per_question_type = results.iloc[question_type_indexes]
+        if "answer_type" not in per_question_type.columns:
+            per_question_type = per_question_type.copy()
+            per_question_type["answer_type"] = per_question_type.apply(_doc_answer_type, axis=1)
 
-        if question_type in MCA_QUESTION_TYPES:
-            for metric in METRICS_FOR_MCA.keys():
-                output[f"{question_type}_{metric}"] = per_question_type[metric].mean()
-        elif question_type in NA_QUESTION_TYPES:
-            for metric in METRICS_FOR_NA.keys():
-                if metric == 'success_rate':
-                    output[f"{question_type}_{metric}"] = per_question_type[metric].mean()
+        for answer_type, answer_type_indexes in per_question_type.groupby("answer_type").groups.items():
+            per_answer_type = per_question_type.loc[answer_type_indexes]
+            metrics = _metrics_for_answer_type(answer_type)
+            for metric in metrics.keys():
+                if len(per_question_type["answer_type"].unique()) > 1:
+                    output[f"{question_type}_{answer_type}_{metric}"] = per_answer_type[metric].mean()
                 else:
-                    output[f"{question_type}_{metric}"] = per_question_type[metric].mean()
-
-        else:
-            raise ValueError(f"Unknown question type: {question_type}")
+                    output[f"{question_type}_{metric}"] = per_answer_type[metric].mean()
 
     if 'object_rel_direction_easy_accuracy' in output:
         output['object_rel_direction_accuracy'] = sum([
@@ -154,8 +235,29 @@ def vsibench_aggregate_results(results):
     output['overall'] = sum([_ for _ in output.values()]) / len(output)
     eval_logger.info(f"Evaluation results: {output}")
 
-    results = OrderedDict()
-    results["overall"] = output["overall"].item() * 100.
+    aggregated_results = OrderedDict()
+    aggregated_results["overall"] = output["overall"].item() * 100.
+
+    if "media_type" in results.columns:
+        metric_columns = [metric for metric in [*METRICS_FOR_MCA.keys(), *METRICS_FOR_NA.keys()] if metric in results.columns]
+        for media_type in ["image", "video"]:
+            per_media = results[results["media_type"] == media_type]
+            if len(per_media) == 0 or len(metric_columns) == 0:
+                continue
+            per_media_scores = []
+            for question_type, question_type_indexes in per_media.groupby("question_type").groups.items():
+                per_question_type = per_media.loc[question_type_indexes]
+                if "answer_type" not in per_question_type.columns:
+                    per_question_type = per_question_type.copy()
+                    per_question_type["answer_type"] = per_question_type.apply(_doc_answer_type, axis=1)
+                for answer_type, answer_type_indexes in per_question_type.groupby("answer_type").groups.items():
+                    per_answer_type = per_question_type.loc[answer_type_indexes]
+                    metrics = _metrics_for_answer_type(answer_type)
+                    for metric in metrics.keys():
+                        if metric in per_answer_type:
+                            per_media_scores.append(per_answer_type[metric].mean())
+            if per_media_scores:
+                aggregated_results[f"{media_type}_overall"] = (sum(per_media_scores) / len(per_media_scores)).item() * 100.
     
     for question_type in [
         # "object_counting",
@@ -173,14 +275,18 @@ def vsibench_aggregate_results(results):
         ]:
             key = f"{question_type}_{metric}"
             if key in output:
-                results[key] = output[key].item() * 100.
+                aggregated_results[key] = output[key].item() * 100.
+            for answer_type in [ANSWER_TYPE_MULTIPLE_CHOICE, ANSWER_TYPE_NUMERIC]:
+                typed_key = f"{question_type}_{answer_type}_{metric}"
+                if typed_key in output:
+                    aggregated_results[typed_key] = output[typed_key].item() * 100.
 
-    tabulated_keys = ", ".join([_ for _ in results.keys()])
-    tabulated_results = ", ".join([f"{_:.3f}" for _ in results.values()])
+    tabulated_keys = ", ".join([_ for _ in aggregated_results.keys()])
+    tabulated_results = ", ".join([f"{_:.3f}" for _ in aggregated_results.values()])
     eval_logger.info(f"Tabulated results: {tabulated_keys}")
     eval_logger.info(f"Tabulated results: {tabulated_results}")
 
-    results["tabulated_keys"] = tabulated_keys
-    results["tabulated_results"] = tabulated_results
+    aggregated_results["tabulated_keys"] = tabulated_keys
+    aggregated_results["tabulated_results"] = tabulated_results
 
-    return results
+    return aggregated_results

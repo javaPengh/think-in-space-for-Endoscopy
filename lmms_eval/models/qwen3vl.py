@@ -21,6 +21,9 @@ DEFAULT_GEN_KWARGS = dict(
     do_sample=False,
 )
 
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
+
 
 @register_model("qwen3vl")
 class Qwen3VL(lmms):
@@ -49,6 +52,7 @@ class Qwen3VL(lmms):
                 self.keyframe_mapping = json.load(f)
 
         self.path = pretrained
+        self.max_pixels = int(max_pixels) if max_pixels is not None else None
 
         # Load model
         if device_map == "auto":
@@ -56,7 +60,10 @@ class Qwen3VL(lmms):
         else:
             self._model = Qwen3VLForConditionalGeneration.from_pretrained(self.path, torch_dtype=torch.bfloat16, attn_implementation="flash_attention_2", low_cpu_mem_usage=True, trust_remote_code=True).eval().cuda()
 
-        self._processor = AutoProcessor.from_pretrained(self.path, trust_remote_code=True)
+        processor_kwargs = {"trust_remote_code": True}
+        if self.max_pixels is not None:
+            processor_kwargs["max_pixels"] = self.max_pixels
+        self._processor = AutoProcessor.from_pretrained(self.path, **processor_kwargs)
 
         batch_size = int(batch_size)
         assert batch_size == 1, f"Batch size should be 1 for Qwen3VL, but got {batch_size}."
@@ -107,7 +114,6 @@ class Qwen3VL(lmms):
 
         self.modality = modality
         self.max_frames_num = max_frames_num
-        self.max_pixels = max_pixels
         self.sample_frames_version = None
 
     @property
@@ -177,11 +183,60 @@ class Qwen3VL(lmms):
         self.sample_frames_version = version_obj[0]
         return self.sample_frames_version
 
-    def generate_until(self, requests) -> List[str]:
-        # 在处理批次前确定好目录版本，确保多进程统一
-        if self.modality == "video":
-            self._determine_sample_frames_version()
+    def _flatten_visuals(self, visual):
+        if visual is None or visual == []:
+            return []
+        if isinstance(visual, list):
+            return visual
+        return [visual]
 
+    def _infer_media_type(self, media_path):
+        suffix = os.path.splitext(str(media_path))[1].lower()
+        if suffix in IMAGE_EXTENSIONS:
+            return "image"
+        if suffix in VIDEO_EXTENSIONS:
+            return "video"
+        return self.modality
+
+    def _get_media_info(self, visual):
+        visual_items = self._flatten_visuals(visual)
+        if not visual_items:
+            return "text", None
+
+        first_visual = visual_items[0]
+        if isinstance(first_visual, dict):
+            media_path = first_visual.get("path") or first_visual.get("media_path")
+            if media_path is None:
+                raise ValueError(f"Missing media path in visual input: {first_visual}")
+            media_type = str(first_visual.get("media_type") or self._infer_media_type(media_path)).lower()
+        else:
+            media_path = first_visual
+            media_type = self._infer_media_type(media_path)
+
+        if media_type not in {"image", "video"}:
+            raise ValueError(f"Unsupported media_type for Qwen3VL: {media_type}")
+        return media_type, media_path
+
+    def _generate_from_messages(self, messages, gen_kwargs):
+        text = self._processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        image_inputs, video_inputs = process_vision_info(messages)
+        inputs = self._processor(text=[text], images=image_inputs, videos=video_inputs, padding=True, return_tensors="pt")
+        inputs = inputs.to(self._device)
+
+        with torch.no_grad():
+            generated_ids = self.model.generate(**inputs, **gen_kwargs)
+
+        generated_ids_trimmed = [out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
+        output_text = self._processor.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+
+        del inputs
+        del generated_ids
+        del generated_ids_trimmed
+        gc.collect()
+        torch.cuda.empty_cache()
+        return output_text
+
+    def generate_until(self, requests) -> List[str]:
         res = []
         pbar = tqdm(total=len(requests), disable=(self.rank != 0), desc="Model Responding")
 
@@ -193,13 +248,30 @@ class Qwen3VL(lmms):
                 if k not in gen_kwargs:
                     gen_kwargs[k] = v
 
-            visuals = [doc_to_visual(self.task_dict[task][split][doc_id])]
-            visuals = self.flatten(visuals)
-            if self.modality == "image":
-                raise NotImplementedError("Image inference for Qwen3VL is not supported yet.")
-            elif self.modality == "video":
-                assert len(visuals) == 1, f"Only one video is supported, but got {len(visuals)} videos."
-                video_path = visuals[0]
+            media_type, media_path = self._get_media_info(doc_to_visual(self.task_dict[task][split][doc_id]))
+            if media_type == "image":
+                unique_image_name = os.path.join(*str(media_path).split(os.sep)[-3:])
+                pbar.set_postfix_str(f"Image: {unique_image_name}")
+                image_content = {
+                    "type": "image",
+                    "image": media_path,
+                }
+                if self.max_pixels is not None:
+                    image_content["max_pixels"] = self.max_pixels
+                messages = [
+                    {
+                        "role": "user",
+                        "content": [
+                            image_content,
+                            {"type": "text", "text": f"{contexts}"},
+                        ],
+                    }
+                ]
+                output_text = self._generate_from_messages(messages, gen_kwargs)
+            elif media_type == "video":
+                if self.sample_frames_version is None:
+                    self._determine_sample_frames_version()
+                video_path = str(media_path)
                 # ====== 新增：提取唯一视频名称用于日志核查 ======
                 # 将完整路径截取为倒数 2 层目录 + 视频名称的格式
                 unique_video_name = os.path.join(*video_path.split(os.sep)[-3:])
@@ -274,9 +346,10 @@ class Qwen3VL(lmms):
                 video_content = {
                     "type": "video",
                     "video": frame_paths,
-                    "max_pixels": self.max_pixels,
                     "fps": 1.0 # 这里的 fps 在列表模式下仅用于控制底层时间戳计算(如每秒1帧)，对截断无影响
                 }
+                if self.max_pixels is not None:
+                    video_content["max_pixels"] = self.max_pixels
                 messages = [
                     {
                         "role": "user",
@@ -287,48 +360,7 @@ class Qwen3VL(lmms):
                     }
                 ]
 
-                # ================= 极其关键的修复 =================
-                # 1. 仅让 HuggingFace 处理纯文本提示词，不让它碰视频
-                text = self._processor.apply_chat_template(
-                    messages,
-                    tokenize=False,
-                    add_generation_prompt=True
-                )
-
-                # 2. 强制使用 Qwen 官方工具！它才会真正读取 max_pixels
-                image_inputs, video_inputs = process_vision_info(messages)
-
-                # 3. 将降采样后体积的安全张量交给模型
-                inputs = self._processor(
-                    text=[text],
-                    images=image_inputs,
-                    videos=video_inputs,
-                    padding=True,
-                    return_tensors="pt"
-                )
-                inputs = inputs.to(self._device)
-                # ===================================================
-
-                with torch.no_grad():
-                    generated_ids = self.model.generate(**inputs, **gen_kwargs)
-
-                # Trim input tokens from output
-                generated_ids_trimmed = [out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
-                output_text = self._processor.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
-                
-                # ================= 新增：强力显存回收机制 =================
-                # 1. 彻底切断当前样本的所有大张量引用
-                del inputs
-                del generated_ids
-                del generated_ids_trimmed
-
-                # 2. 强制 Python 立即回收对象
-                gc.collect()
-
-                # 3. 强制 PyTorch 清空 CUDA 缓存池，把显存还给操作系统
-                torch.cuda.empty_cache()
-                
-                # ==========================================================
+                output_text = self._generate_from_messages(messages, gen_kwargs)
             else:
                 raise NotImplementedError
             res.append(output_text)

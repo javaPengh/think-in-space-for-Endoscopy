@@ -2,6 +2,7 @@ import copy
 import json
 import logging
 import math
+import os
 import re
 import warnings
 from datetime import timedelta
@@ -33,6 +34,7 @@ eval_logger = logging.getLogger("lmms-eval")
 torch.backends.cuda.matmul.allow_tf32 = True
 
 DEFAULT_IMAGE_TOKEN = "<image>"
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 VICUNA_CHAT_TEMPLATE = "{% for message in messages %}{% if loop.index0 == 0 %}A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user's questions. USER: {{ message['content'] }} {% elif message['role'] == 'user' %}USER: {{ message['content'] }} {% else %} ASSISTANT: {{ message['content'] }}{{ eos_token }}{% endif %}{% endfor %}{% if add_generation_prompt %}{{ 'ASSISTANT:' }}{% endif %}"
 
 # Determine best attention implementation
@@ -115,7 +117,8 @@ class Llava_OneVision_1_5(lmms):
         self.mm_spatial_pool_mode = mm_spatial_pool_mode
         self.video_decode_backend = video_decode_backend
 
-
+        request_flash_attention = attn_implementation == "flash_attention_2" or bool(llava_model_args.get("use_flash_attention_2"))
+        self._ensure_flash_attn_varlen_func_compat(request_flash_attention=request_flash_attention)
         self._model = AutoModelForCausalLM.from_pretrained(
             pretrained,
             torch_dtype="auto",
@@ -274,6 +277,61 @@ class Llava_OneVision_1_5(lmms):
         model_inputs.pop("second_per_grid_ts", None)
         return model_inputs
 
+    def _flatten_visuals(self, visual):
+        if visual is None or visual == []:
+            return []
+        if isinstance(visual, list):
+            return visual
+        return [visual]
+
+    def _open_image(self, image_path):
+        with PIL.Image.open(image_path) as image:
+            return image.convert("RGB")
+
+    def _load_visual_inputs(self, visual, doc_id, task, split):
+        visual_items = self._flatten_visuals(visual)
+        if not visual_items:
+            return "text", None
+
+        first_visual = visual_items[0]
+        if isinstance(first_visual, PIL.Image.Image):
+            return "image", visual_items
+
+        if isinstance(first_visual, dict):
+            media_type = str(first_visual.get("media_type", "")).lower()
+            media_paths = [item.get("path") or item.get("media_path") for item in visual_items]
+            if any(path is None for path in media_paths):
+                raise ValueError(f"Missing media path in visual input: {visual_items}")
+            if not media_type:
+                media_type = "image" if os.path.splitext(str(media_paths[0]))[1].lower() in IMAGE_EXTENSIONS else "video"
+        else:
+            media_paths = visual_items
+            media_type = "image" if isinstance(first_visual, str) and os.path.splitext(first_visual)[1].lower() in IMAGE_EXTENSIONS else "video"
+
+        if media_type == "image":
+            return "image", [self._open_image(path) if isinstance(path, str) else path for path in media_paths]
+        if media_type != "video":
+            raise ValueError(f"Unsupported media_type for LLaVA-OneVision-1.5: {media_type}")
+
+        try:
+            doc_data = self.task_dict[task][split][doc_id]
+            question_key = None
+            for possible_key in ["question_id", "id", "ID", "Question_ID", "questionId"]:
+                if possible_key in doc_data:
+                    question_key = str(doc_data[possible_key])
+                    break
+            if question_key is None:
+                question_key = str(doc_id)
+
+            if self.video_decode_backend == "decord":
+                frames = self.load_video(media_paths, self.max_frames_num, question_key=question_key, task=task)
+            else:
+                frames = read_video_pyav(media_paths[0], num_frm=self.max_frames_num)
+            return "video", self._ensure_pil_images(frames)
+        except Exception as e:
+            eval_logger.error(f"Error {e} in loading video")
+            return "text", None
+
     def _ensure_pil_images(self, frames):
         pil_frames = []
         for frame in frames:
@@ -283,6 +341,28 @@ class Llava_OneVision_1_5(lmms):
                 pil_frames.append(PIL.Image.fromarray(frame))
         return pil_frames
 
+    def _ensure_flash_attn_varlen_func_compat(self, request_flash_attention: bool):
+        try:
+            from transformers import modeling_flash_attention_utils
+        except ImportError:
+            return
+
+        if hasattr(modeling_flash_attention_utils, "flash_attn_varlen_func"):
+            return
+
+        try:
+            from flash_attn.flash_attn_interface import flash_attn_varlen_func
+        except ImportError as e:
+            if request_flash_attention:
+                raise ImportError(
+                    "LLaVA-OneVision-1.5 expects flash_attn_varlen_func. "
+                    "Install a compatible flash-attn build or disable flash_attention_2."
+                ) from e
+            modeling_flash_attention_utils.flash_attn_varlen_func = None
+            return
+
+        modeling_flash_attention_utils.flash_attn_varlen_func = flash_attn_varlen_func
+
     def loglikelihood(self, requests: List[Instance]) -> List[Tuple[float, bool]]:
         res = []
         pbar = tqdm(total=len(requests), disable=(self.rank != 0), desc="Model Responding")
@@ -291,37 +371,7 @@ class Llava_OneVision_1_5(lmms):
             visual = doc_to_visual(self.task_dict[task][split][doc_id])
             continuation = doc_to_target if isinstance(doc_to_target, str) else doc_to_target(self.task_dict[task][split][doc_id])
 
-            task_type = "text"
-            visuals = None
-            placeholder_count = 0
-
-            if visual is not None and visual != []:
-                visuals = self.flatten([visual])
-                if isinstance(visuals[0], PIL.Image.Image):
-                    task_type = "image"
-                    placeholder_count = len(visuals)
-                elif isinstance(visuals[0], str):
-                    try:
-                        doc_data = self.task_dict[task][split][doc_id]
-                        question_key = None
-                        for possible_key in ["question_id", "id", "ID", "Question_ID", "questionId"]:
-                            if possible_key in doc_data:
-                                question_key = str(doc_data[possible_key])
-                                break
-                        if question_key is None:
-                            question_key = str(doc_id)
-
-                        if self.video_decode_backend == "decord":
-                            frames = self.load_video(visuals, self.max_frames_num, question_key=question_key, task=task)
-                        else:
-                            frames = read_video_pyav(visuals[0], num_frm=self.max_frames_num)
-                        visuals = self._ensure_pil_images(frames)
-                        task_type = "video"
-                        placeholder_count = len(visuals) if self.token_strategy == "multiple" else 1
-                    except Exception as e:
-                        eval_logger.error(f"Error {e} in loading video")
-                        visuals = None
-                        task_type = "text"
+            task_type, visuals = self._load_visual_inputs(visual, doc_id, task, split)
 
             messages = [{"role": "user", "content": self._build_user_content(contexts, visuals, task_type)}, {"role": "assistant", "content": continuation}]
             prompt = self._apply_chat_template(messages[:-1], add_generation_prompt=True)
@@ -432,7 +482,6 @@ class Llava_OneVision_1_5(lmms):
             toks = self.tok_encode(x[0])
             return -len(toks), x[0]
 
-        metadata = requests[0].metadata
         re_ords = utils.Collator([reg.args for reg in requests], _collate, grouping=True)
         chunks = re_ords.get_batched(n=self.batch_size, batch_fn=None)
         num_iters = len(requests) // self.batch_size if len(requests) % self.batch_size == 0 else len(requests) // self.batch_size + 1
@@ -450,40 +499,10 @@ class Llava_OneVision_1_5(lmms):
 
             question_input = []
             visuals_for_batch = None
+            task_type = "text"
 
             for visual, context in zip(batched_visuals, batched_contexts):
-                task_type = "text"
-                placeholder_count = 0
-
-                if visual is None or visual == []:
-                    visuals_for_batch = None
-                else:
-                    if isinstance(visual[0], PIL.Image.Image):
-                        visuals_for_batch = visual
-                        task_type = "image"
-                        placeholder_count = len(visual)
-                    elif isinstance(visual[0], str):
-                        try:
-                            doc_data = self.task_dict[task][split][batched_doc_id[0]]
-                            question_key = None
-                            for possible_key in ["question_id", "id", "ID", "Question_ID", "questionId"]:
-                                if possible_key in doc_data:
-                                    question_key = str(doc_data[possible_key])
-                                    break
-                            if question_key is None:
-                                question_key = str(batched_doc_id[0])
-
-                            if self.video_decode_backend == "decord":
-                                frames = self.load_video(visual, self.max_frames_num, question_key=question_key, task=task)
-                            else:
-                                frames = read_video_pyav(visual[0], num_frm=self.max_frames_num)
-                            visuals_for_batch = self._ensure_pil_images(frames)
-                            task_type = "video"
-                            placeholder_count = len(visuals_for_batch) if self.token_strategy == "multiple" else 1
-                        except Exception as e:
-                            eval_logger.error(f"Error {e} in loading video")
-                            visuals_for_batch = None
-                            task_type = "text"
+                task_type, visuals_for_batch = self._load_visual_inputs(visual, batched_doc_id[0], task, split)
 
             question = context
             if utils.is_json(question):
@@ -499,10 +518,6 @@ class Llava_OneVision_1_5(lmms):
                 prompt_question = self._apply_chat_template(messages, add_generation_prompt=True)
 
             question_input.append(prompt_question)
-
-            gen_kwargs.setdefault("max_new_tokens", 1024)
-            gen_kwargs.setdefault("do_sample", False)
-            gen_kwargs.setdefault("num_beams", 1)
 
             if not gen_kwargs.get("do_sample", True):
                 gen_kwargs.pop("temperature", None)
