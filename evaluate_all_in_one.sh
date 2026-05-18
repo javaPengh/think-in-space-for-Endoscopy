@@ -2,7 +2,7 @@
 
 set -e
 
-export CUDA_VISIBLE_DEVICES=1,2
+export CUDA_VISIBLE_DEVICES=1,2,3,4
 export NCCL_P2P_DISABLE=1
 export NCCL_IB_DISABLE=1
 if [ -z "$CUDA_VISIBLE_DEVICES" ]; then
@@ -119,39 +119,6 @@ for model in "${models[@]}"; do
         model_args="pretrained=lmms-lab/LLaVA-NeXT-Video-72B-Qwen2,video_decode_backend=decord,conv_template=qwen_1_5,max_frames_num=32,device_map=auto"
         num_processes=1
         ;;
-    "llama3_vila1p5_8b_32f")
-        model_family="vila"
-        model="llama3_vila1p5_8b_${num_frames}f"
-        model_args="pretrained=Efficient-Large-Model/Llama-3-VILA1.5-8B,attn_implementation=flash_attention_2,video_decode_backend=decord,conv_template=llama_3,max_frames_num=$num_frames"
-        ;;
-    "llama3_vila1p5_40b_32f")
-        model_family="vila"
-        model_args="pretrained=Efficient-Large-Model/VILA1.5-40b,attn_implementation=flash_attention_2,video_decode_backend=decord,conv_template=hermes-2,max_frames_num=32,device_map=auto"
-        num_processes=1
-        ;;
-    "llama3_longvila_8b_128frames_32f")
-        model_family="vila"
-        model="llama3_longvila_8b_128frames_${num_frames}f"
-        model_args="pretrained=Efficient-Large-Model/Llama-3-LongVILA-8B-128Frames,attn_implementation=flash_attention_2,video_decode_backend=decord,conv_template=llama_3,device_map=cuda,max_frames_num=$num_frames"
-        ;;
-    "longva_7b_32f")
-        model_family="longva"
-        model="longva_7b_${num_frames}f"
-        model_args="pretrained=~/.cache/modelscope/hub/models/lmms-lab/LongVA-7B,video_decode_backend=decord,conv_template=qwen_1_5,model_name=longva_qwen_7b,max_frames_num=$num_frames"
-        ;;
-    "internvl2_2b_8f")
-        model_family="internvl2"
-        model_args="pretrained=OpenGVLab/InternVL2-2B,modality=video,max_frames_num=8"
-        ;;
-    "internvl2_8b_8f")
-        model_family="internvl2"
-        model_args="pretrained=~/.cache/modelscope/hub/models/OpenGVLab/InternVL2-8B,modality=video,max_frames_num=16"
-        ;;
-    "internvl2_40b_8f")
-        model_family="internvl2"
-        model_args="pretrained=OpenGVLab/InternVL2-40B,modality=video,max_frames_num=8,device_map=auto"
-        num_processes=1
-        ;;
     "internvl3_5_2b_32f")
         model_family="internvl3_5"
         model="internvl3_5_2b_${num_frames}f"
@@ -177,7 +144,7 @@ for model in "${models[@]}"; do
     "internvideo2_5_chat_8b_32f")
         model_family="internvideo2_5_chat_8b"
         model="internvideo2_5_chat_8b_${num_frames}f"
-        model_args="pretrained=~/.cache/modelscope/hub/models/OpenGVLab/InternVideo2_5_Chat_8B,modality=video,max_frames_num=$num_frames"
+        model_args="pretrained=~/.cache/modelscope/hub/models/OpenGVLab/InternVideo2_5_Chat_8B,modality=video,max_frames_num=$num_frames,device_map=auto"
         ;;
     *)
         echo "Unknown model: $model"

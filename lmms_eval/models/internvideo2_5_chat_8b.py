@@ -1,4 +1,5 @@
 from datetime import timedelta
+import os
 from typing import List, Tuple
 
 import numpy as np
@@ -26,6 +27,9 @@ DEFAULT_GEN_KWARGS = dict(
     max_new_tokens=1024,
     do_sample=False,
 )
+
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
 
 
 def build_transform(input_size):
@@ -95,6 +99,9 @@ def dynamic_preprocess(image, min_num=1, max_num=6, image_size=448, use_thumbnai
 
 
 def load_image(image, input_size=448, max_num=6):
+    if isinstance(image, (str, os.PathLike)):
+        with Image.open(image) as raw_image:
+            image = raw_image.convert("RGB")
     transform = build_transform(input_size=input_size)
     images = dynamic_preprocess(
         image, image_size=input_size, use_thumbnail=True, max_num=max_num
@@ -242,7 +249,10 @@ class InternVideo2_5_Chat(lmms):
             with open(keyframe_mapping_path, "r", encoding="utf-8") as f:
                 self.keyframe_mapping = json.load(f)
 
-        self._config = AutoConfig.from_pretrained(self.path, trust_remote_code=True)
+        self._config = AutoConfig.from_pretrained(
+            self.path,
+            trust_remote_code=True,
+        )
 
 
         if device_map == 'auto':
@@ -323,6 +333,7 @@ class InternVideo2_5_Chat(lmms):
             self.model.to(self._device)
             self._rank = 0
             self._world_size = 1
+        self._default_visual_token_state = self._capture_visual_token_state()
 
     @property
     def config(self):
@@ -360,6 +371,61 @@ class InternVideo2_5_Chat(lmms):
     def _cast_and_move_pixels(self, pixel_values: torch.Tensor):
         return pixel_values.to(device=self.device, dtype=torch.bfloat16, non_blocking=True)
 
+    def _capture_visual_token_state(self):
+        model = self.model
+        return {attr: getattr(model, attr) for attr in ("local_num_frames", "num_image_token") if hasattr(model, attr)}
+
+    def _restore_visual_token_state(self, state):
+        model = self.model
+        for attr, value in state.items():
+            setattr(model, attr, value)
+
+    def _set_local_num_frames(self, local_num_frames):
+        model = self.model
+        local_num_frames = int(local_num_frames)
+        old_local_num_frames = int(getattr(model, "local_num_frames", local_num_frames))
+        num_tome_tokens = getattr(model, "num_tome_tokens", None)
+        if num_tome_tokens is None and hasattr(model, "num_image_token"):
+            num_tome_tokens = int(model.num_image_token) * old_local_num_frames
+
+        model.local_num_frames = local_num_frames
+        if num_tome_tokens is not None:
+            model.num_image_token = int(num_tome_tokens) // local_num_frames
+
+    def _flatten_visuals(self, visual):
+        if visual is None or visual == []:
+            return []
+        if isinstance(visual, list):
+            return visual
+        return [visual]
+
+    def _infer_media_type(self, media_path):
+        suffix = os.path.splitext(str(media_path))[1].lower()
+        if suffix in IMAGE_EXTENSIONS:
+            return "image"
+        if suffix in VIDEO_EXTENSIONS:
+            return "video"
+        return self.modality
+
+    def _get_media_inputs(self, visual):
+        visual_items = self._flatten_visuals(visual)
+        if not visual_items:
+            return "text", []
+
+        first_visual = visual_items[0]
+        if isinstance(first_visual, dict):
+            media_inputs = [item.get("path") or item.get("media_path") for item in visual_items]
+            if any(item is None for item in media_inputs):
+                raise ValueError(f"Missing media path in visual input: {visual_items}")
+            media_type = str(first_visual.get("media_type") or self._infer_media_type(media_inputs[0])).lower()
+        else:
+            media_inputs = visual_items
+            media_type = self._infer_media_type(first_visual)
+
+        if media_type not in {"image", "video"}:
+            raise ValueError(f"Unsupported media_type for InternVideo2.5: {media_type}")
+        return media_type, media_inputs
+
     def _determine_sample_frames_version(self):
         # 分布式安全地确定 sample_frames 的版本目录 (仅执行一次)
         import os
@@ -396,10 +462,6 @@ class InternVideo2_5_Chat(lmms):
     def generate_until(self, requests) -> List[str]:
         import gc
 
-        # 在处理批次前确定好目录版本，确保多进程统一
-        if self.modality == "video":
-            self._determine_sample_frames_version()
-
         res = []
         pbar = tqdm(total=len(requests), disable=(self.rank != 0), desc="Model Responding")
 
@@ -420,31 +482,34 @@ class InternVideo2_5_Chat(lmms):
             for k in pop_keys:
                 gen_kwargs.pop(k)
 
-            visuals = [doc_to_visual(self.task_dict[task][split][doc_id])]
-            if visuals != [None]:
-                visuals = self.flatten(visuals)
-                if self.modality == "image":
-                    if visuals:
-                        visuals = [self._cast_and_move_pixels(load_image(v)) for v in visuals]
-                        pixel_values = torch.cat(visuals, dim=0)
-                        num_patches_list = [v.size(0) for v in visuals]
-                        image_tokens = " ".join(["<image>"] * len(visuals))
-                        contexts = image_tokens + "\n" + contexts
-                    else:
-                        pixel_values = None
-                        num_patches_list = None
+            media_type, visuals = self._get_media_inputs(doc_to_visual(self.task_dict[task][split][doc_id]))
+            if visuals:
+                if media_type == "image":
+                    visual_token_state = self._capture_visual_token_state()
+                    try:
+                        self._set_local_num_frames(1)
+                        image_tensors = [self._cast_and_move_pixels(load_image(visual, max_num=1)) for visual in visuals]
+                        pixel_values = torch.cat(image_tensors, dim=0)
+                        num_patches_list = [image_tensor.size(0) for image_tensor in image_tensors]
+                        image_prefix = "".join(["<image>\n" for _ in num_patches_list])
+                        question = image_prefix + contexts
 
-                    response, _ = self.model.chat(
-                        self.tokenizer,
-                        pixel_values,
-                        contexts,
-                        gen_kwargs,
-                        num_patches_list=num_patches_list,
-                        history=None,
-                        return_history=True,
-                    )
+                        response, _ = self.model.chat(
+                            self.tokenizer,
+                            pixel_values,
+                            question,
+                            gen_kwargs,
+                            num_patches_list=num_patches_list,
+                            history=None,
+                            return_history=True,
+                        )
+                    finally:
+                        self._restore_visual_token_state(visual_token_state)
 
-                elif self.modality == "video":
+                elif media_type == "video":
+                    self._restore_visual_token_state(self._default_visual_token_state)
+                    if self.sample_frames_version is None:
+                        self._determine_sample_frames_version()
                     assert len(visuals) == 1, f"Only one video is supported, got {len(visuals)}."
                     video_path = visuals[0]
                     
@@ -487,7 +552,7 @@ class InternVideo2_5_Chat(lmms):
                         return_history=True,
                     )
                 else:
-                    raise ValueError(f"Unsupported modality: {self.modality}")
+                    raise ValueError(f"Unsupported media_type: {media_type}")
             else:
                 response, _ = self.model.chat(
                     self.tokenizer,
