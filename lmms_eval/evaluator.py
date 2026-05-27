@@ -285,6 +285,13 @@ def simple_evaluate(
                 "fewshot_seed": fewshot_random_seed,
             }
         )
+        if hasattr(lm, "get_token_usage_summary"):
+            try:
+                token_usage = lm.get_token_usage_summary()
+                if token_usage:
+                    results["config"]["token_usage"] = token_usage
+            except Exception as error:
+                eval_logger.warning(f"Failed to collect model token usage summary: {error}")
         results["git_hash"] = get_git_commit_hash()
         results["date"] = get_datetime_str()
         # add_env_info(results)  # additional environment info to results

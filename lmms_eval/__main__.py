@@ -247,7 +247,7 @@ def parse_eval_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--timezone",
-        default="America/New_York",
+        default="Asia/Shanghai",
         help="Timezone for datetime string, e.g. Asia/Singapore, America/New_York, America/Los_Angeles",
     )
     parser.add_argument(
@@ -549,6 +549,13 @@ def cli_evaluate_single(args: Union[argparse.Namespace, None] = None) -> None:
                 eval_logger.warning(f"Output file {result_file_path} already exists and will be overwritten.")
 
             result_file_path.open("w").write(dumped)
+            try:
+                from tools.update_eval_dashboard import update_dashboard_from_result_file
+
+                dashboard_paths = update_dashboard_from_result_file(result_file_path)
+                eval_logger.info(f"Updated evaluation dashboard: {dashboard_paths['html_path']}")
+            except Exception as error:
+                eval_logger.warning(f"Failed to update evaluation dashboard: {error}")
             if args.log_samples:
                 for task_name, config in results["configs"].items():
                     filename = args.output_path.joinpath(f"{task_name}.json")

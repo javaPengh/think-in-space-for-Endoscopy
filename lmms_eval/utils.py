@@ -580,11 +580,10 @@ def get_git_commit_hash():
     return git_hash
 
 
-def get_datetime_str(timezone="America/New_York"):
+def get_datetime_str(timezone="Asia/Shanghai"):
     """
-    Gets the current datetime in UTC+8 timezone as a string.
+    Gets the current datetime in the configured timezone as a string.
     """
-    # Default: UTC+8 timezone
     tz = pytz.timezone(timezone)
     utc_now = datetime.datetime.now(datetime.timezone.utc)
     local_time = utc_now.astimezone(tz)

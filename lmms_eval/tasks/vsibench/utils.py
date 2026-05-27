@@ -1,4 +1,3 @@
-
 import os
 from pathlib import Path
 import yaml
@@ -14,16 +13,16 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
 
 MCA_QUESTION_TYPES = [
-    # "object_rel_direction_easy",
+    "object_rel_direction_easy",
     # "object_rel_direction_medium",
     # "object_rel_direction_hard",
-    # "object_rel_distance",
-    # "route_planning",
-    # "obj_appearance_order",
+    "object_rel_distance",
+    "route_planning",
+    "obj_appearance_order",
 ]
 NA_QUESTION_TYPES = [
-    # "object_abs_distance",
-    # "object_counting",
+    "object_abs_distance",
+    "object_counting",
     "object_size_estimation",
     # "room_size_estimation",
 ]
@@ -225,12 +224,14 @@ def vsibench_aggregate_results(results):
                 else:
                     output[f"{question_type}_{metric}"] = per_answer_type[metric].mean()
 
-    if 'object_rel_direction_easy_accuracy' in output:
-        output['object_rel_direction_accuracy'] = sum([
-            output.pop('object_rel_direction_easy_accuracy'),
-            output.pop('object_rel_direction_medium_accuracy'),
-            output.pop('object_rel_direction_hard_accuracy'),
-        ]) / 3.
+    direction_keys = [
+        "object_rel_direction_easy_accuracy",
+        "object_rel_direction_medium_accuracy",
+        "object_rel_direction_hard_accuracy",
+    ]
+    direction_scores = [output.pop(key) for key in direction_keys if key in output]
+    if direction_scores:
+        output["object_rel_direction_accuracy"] = sum(direction_scores) / len(direction_scores)
 
     output['overall'] = sum([_ for _ in output.values()]) / len(output)
     eval_logger.info(f"Evaluation results: {output}")
@@ -260,14 +261,14 @@ def vsibench_aggregate_results(results):
                 aggregated_results[f"{media_type}_overall"] = (sum(per_media_scores) / len(per_media_scores)).item() * 100.
     
     for question_type in [
-        # "object_counting",
-        # "object_abs_distance",
+        "object_counting",
+        "object_abs_distance",
         "object_size_estimation",
         # "room_size_estimation",
-        # "object_rel_distance",
-        # "object_rel_direction",
-        # "route_planning",
-        # "obj_appearance_order",
+        "object_rel_distance",
+        "object_rel_direction",
+        "route_planning",
+        "obj_appearance_order",
     ]:
         for metric in [
             "accuracy",
