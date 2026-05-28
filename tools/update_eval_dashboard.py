@@ -1,6 +1,9 @@
 import argparse
+import ast
 import hashlib
 import json
+import math
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -9,9 +12,18 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DOCS_DIR = REPO_ROOT / "docs"
 DEFAULT_DATA_PATH = DOCS_DIR / "eval_dashboard_data.json"
 DEFAULT_HTML_PATH = DOCS_DIR / "eval_dashboard.html"
+DEFAULT_BASELINE_EXCEL_PATH = Path(r"C:\Users\a2818\Desktop\QA\抽样测试.xlsx")
+
+CHOICE_ANSWER_TYPES = {"mca", "mcq", "multiple_choice", "choice"}
+NUMERIC_ANSWER_TYPES = {"na", "numeric", "number", "numerical"}
+QUESTION_TYPE_METRIC_MAP = {
+    "object_rel_direction_easy": "object_rel_direction_accuracy",
+    "object_rel_direction_medium": "object_rel_direction_accuracy",
+    "object_rel_direction_hard": "object_rel_direction_accuracy",
+}
 
 
-def update_dashboard_from_result_file(result_file_path, data_path=None, html_path=None):
+def update_dashboard_from_result_file(result_file_path, data_path=None, html_path=None, baseline_excel_path=None):
     result_path = Path(result_file_path).expanduser().resolve()
     data_path = Path(data_path or DEFAULT_DATA_PATH).expanduser().resolve()
     html_path = Path(html_path or DEFAULT_HTML_PATH).expanduser().resolve()
@@ -24,12 +36,30 @@ def update_dashboard_from_result_file(result_file_path, data_path=None, html_pat
     runs = [item for item in data.get("runs", []) if item.get("result_path") != run["result_path"]]
     runs.append(run)
     runs.sort(key=lambda item: item.get("timestamp", ""))
+    baselines = _resolve_baselines(data, baseline_excel_path)
     data = {"runs": runs}
+    if baselines:
+        data["baselines"] = baselines
 
     data_path.parent.mkdir(parents=True, exist_ok=True)
     data_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     html_path.write_text(render_dashboard_html(data), encoding="utf-8")
     return {"data_path": str(data_path), "html_path": str(html_path), "run_id": run["run_id"]}
+
+
+def refresh_dashboard(data_path=None, html_path=None, baseline_excel_path=None):
+    data_path = Path(data_path or DEFAULT_DATA_PATH).expanduser().resolve()
+    html_path = Path(html_path or DEFAULT_HTML_PATH).expanduser().resolve()
+    data = _read_data(data_path)
+    baselines = _resolve_baselines(data, baseline_excel_path)
+    data = {"runs": data.get("runs", [])}
+    if baselines:
+        data["baselines"] = baselines
+
+    data_path.parent.mkdir(parents=True, exist_ok=True)
+    data_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    html_path.write_text(render_dashboard_html(data), encoding="utf-8")
+    return {"data_path": str(data_path), "html_path": str(html_path), "baseline_count": sum(len(items) for items in (baselines or {}).get("items", {}).values())}
 
 
 def build_run_record(results, result_path):
@@ -124,6 +154,192 @@ def _parse_model_args(model_args):
         key, value = part.split("=", 1)
         parsed[key.strip()] = value.strip()
     return parsed
+
+
+def _resolve_baselines(data, baseline_excel_path=None):
+    candidate = _baseline_excel_candidate(baseline_excel_path)
+    if candidate and candidate.exists():
+        return build_baseline_records(candidate)
+    return data.get("baselines")
+
+
+def _baseline_excel_candidate(baseline_excel_path=None):
+    if baseline_excel_path:
+        return Path(baseline_excel_path).expanduser()
+    if DEFAULT_BASELINE_EXCEL_PATH.exists():
+        return DEFAULT_BASELINE_EXCEL_PATH
+    return None
+
+
+def build_baseline_records(excel_path):
+    import pandas as pd
+
+    excel_path = Path(excel_path).expanduser().resolve()
+    sheets = pd.read_excel(excel_path, sheet_name=None)
+    frames = [sheet_df for sheet_df in sheets.values() if not sheet_df.empty]
+    if not frames:
+        return None
+
+    df = pd.concat(frames, ignore_index=True)
+    question_type_col = _find_column(df, ["question_type", "题型", "类别"])
+    answer_type_col = _find_column(df, ["answer_type", "答案类型", "题目类型"])
+    options_col = _find_column(df, ["options", "选项"])
+    correct_col = _find_column(df, ["正确答案", "ground_truth", "answer", "答案"])
+    numeric_truth_col = _find_column(df, ["真值", "ground_truth", "target", "value"])
+
+    if not question_type_col:
+        raise ValueError("Cannot calculate baselines because the Excel file has no question_type/题型 column.")
+
+    items = {}
+    summaries = []
+    for question_type, group in df.groupby(question_type_col, dropna=True):
+        question_type = str(question_type).strip()
+        if not question_type:
+            continue
+
+        choice_rows = group[group.apply(lambda row: _row_answer_kind(row, answer_type_col, options_col) == "choice", axis=1)]
+        if not choice_rows.empty:
+            if not options_col or not correct_col:
+                raise ValueError("Choice baselines require options/选项 and ground_truth/正确答案 columns.")
+            metric_key = _metric_key_for_question_type(question_type, "choice")
+            random_values = []
+            correct_labels = []
+            for _, row in choice_rows.iterrows():
+                options = _parse_options(row.get(options_col))
+                if options:
+                    random_values.append(1.0 / len(options))
+                label = _normalize_answer_label(row.get(correct_col))
+                if label:
+                    correct_labels.append(label)
+            random_baseline = (sum(random_values) / len(random_values) * 100.0) if random_values else None
+            frequency_baseline = None
+            if correct_labels:
+                counts = {}
+                for label in correct_labels:
+                    counts[label] = counts.get(label, 0) + 1
+                frequency_baseline = max(counts.values()) / len(correct_labels) * 100.0
+
+            metric_items = []
+            if random_baseline is not None:
+                metric_items.append({"kind": "random", "label": "随机基线", "value": random_baseline, "question_type": question_type, "n": int(len(choice_rows))})
+            if frequency_baseline is not None:
+                metric_items.append({"kind": "frequency", "label": "频率基线", "value": frequency_baseline, "question_type": question_type, "n": int(len(choice_rows))})
+            if metric_items:
+                items.setdefault(metric_key, []).extend(metric_items)
+                summaries.extend(metric_items)
+
+        numeric_rows = group[group.apply(lambda row: _row_answer_kind(row, answer_type_col, options_col) == "numeric", axis=1)]
+        if not numeric_rows.empty:
+            if not numeric_truth_col:
+                raise ValueError("Numeric baselines require a ground_truth/真值 column.")
+            values = [_to_float(value) for value in numeric_rows[numeric_truth_col].tolist()]
+            values = [value for value in values if value is not None and value > 0]
+            if values:
+                metric_key = _metric_key_for_question_type(question_type, "numeric")
+                median_value = _median(values)
+                mean_value = sum(values) / len(values)
+                median_mra = _constant_mra(values, median_value)
+                mean_mra = _constant_mra(values, mean_value)
+                item = {
+                    "kind": "constant_mra",
+                    "label": "常数基线MRA",
+                    "value": median_mra,
+                    "question_type": question_type,
+                    "n": int(len(values)),
+                    "constant": median_value,
+                    "mean_constant": mean_value,
+                    "mean_constant_mra": mean_mra,
+                }
+                items.setdefault(metric_key, []).append(item)
+                summaries.append(item)
+
+    return {
+        "source_path": str(excel_path),
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+        "items": items,
+        "summary": summaries,
+    }
+
+
+def _find_column(df, candidates):
+    normalized = {str(column).strip().lower(): column for column in df.columns}
+    for candidate in candidates:
+        column = normalized.get(str(candidate).strip().lower())
+        if column is not None:
+            return column
+    return None
+
+
+def _row_answer_kind(row, answer_type_col, options_col):
+    answer_type = str(row.get(answer_type_col, "")).strip().lower() if answer_type_col else ""
+    if answer_type in CHOICE_ANSWER_TYPES:
+        return "choice"
+    if answer_type in NUMERIC_ANSWER_TYPES:
+        return "numeric"
+    if options_col and _parse_options(row.get(options_col)):
+        return "choice"
+    return "numeric"
+
+
+def _parse_options(value):
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return []
+    if isinstance(value, list):
+        return [item for item in value if str(item).strip()]
+    text = str(value).strip()
+    if not text or text.lower() == "nan":
+        return []
+    try:
+        parsed = ast.literal_eval(text)
+        if isinstance(parsed, (list, tuple)):
+            return [item for item in parsed if str(item).strip()]
+    except (SyntaxError, ValueError):
+        pass
+    label_matches = re.findall(r"(?:^|[\n,;])\s*[A-Z]\s*[\.\)]", text)
+    if label_matches:
+        return label_matches
+    return [part.strip() for part in re.split(r"\n+", text) if part.strip()]
+
+
+def _normalize_answer_label(value):
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return ""
+    text = str(value).strip()
+    match = re.match(r"^([A-Za-z])(?:[\.\)]|\s*$)", text)
+    return match.group(1).upper() if match else text
+
+
+def _metric_key_for_question_type(question_type, answer_kind):
+    question_type = str(question_type).strip()
+    if answer_kind == "choice":
+        return QUESTION_TYPE_METRIC_MAP.get(question_type, f"{question_type}_accuracy")
+    return f"{question_type}_MRA:.5:.95:.05"
+
+
+def _to_float(value):
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _median(values):
+    values = sorted(values)
+    midpoint = len(values) // 2
+    if len(values) % 2:
+        return values[midpoint]
+    return (values[midpoint - 1] + values[midpoint]) / 2.0
+
+
+def _constant_mra(values, constant):
+    thresholds = [0.5 + index * 0.05 for index in range(10)]
+    per_question_scores = []
+    for truth in values:
+        relative_error = abs(constant - truth) / truth
+        per_question_scores.append(sum(1 for threshold in thresholds if relative_error < (1.0 - threshold)) / len(thresholds))
+    return sum(per_question_scores) / len(per_question_scores) * 100.0
 
 
 def _normalize_token_usage(token_usage):
@@ -328,6 +544,13 @@ def render_dashboard_html(data):
     const token = (r, k) => r.token_usage ? r.token_usage[k] : null;
     const seriesLabel = r => `${{r.model || 'unknown'}} / ${{samplingLabel(r)}}`;
     const palette = ['#2563eb', '#c2410c', '#0f9f6e', '#7c3aed', '#be123c', '#0e7490', '#a16207', '#4f46e5', '#15803d'];
+    const baselines = (state.baselines && state.baselines.items) || {{}};
+    const baselineStyles = {{
+      random: {{ label: '随机基线', color: '#6b7280', dash: '6 4', width: 1.5 }},
+      frequency: {{ label: '频率基线', color: '#b45309', dash: '2 3', width: 1.8 }},
+      constant_mra: {{ label: '常数基线MRA', color: '#0f766e', dash: '8 3', width: 1.8 }},
+      default: {{ label: '基线', color: '#667085', dash: '5 4', width: 1.5 }}
+    }};
     const metricLabelMap = {{
       overall: '平均分',
       image_overall: '图像总体',
@@ -425,6 +648,7 @@ def render_dashboard_html(data):
       const plotH = height - padTop - padBottom;
       const groupW = plotW / Math.max(1, metricKeys.length);
       const barW = Math.max(5, Math.min(30, groupW / (chartItems.length + 1)));
+      const visibleBaselineKinds = [...new Set(metricKeys.flatMap(key => (baselines[key] || []).map(item => item.kind)))];
 
       [0, 20, 40, 60, 80, 100].forEach(score => {{
         const y = padTop + plotH * (1 - score / 100);
@@ -453,10 +677,36 @@ def render_dashboard_html(data):
         }});
       }});
 
+      metricKeys.forEach((key, metricIndex) => {{
+        const groupBaselines = baselines[key] || [];
+        groupBaselines.forEach((baseline, baselineIndex) => {{
+          if (typeof baseline.value !== 'number') return;
+          const style = baselineStyles[baseline.kind] || baselineStyles.default;
+          const val = Math.max(0, Math.min(100, Number(baseline.value)));
+          const y = padTop + plotH * (1 - val / 100);
+          const x1 = padLeft + metricIndex * groupW + Math.max(6, groupW * 0.08);
+          const x2 = padLeft + (metricIndex + 1) * groupW - Math.max(6, groupW * 0.08);
+          const label = baseline.label || style.label;
+          const title = `${{metricLabel(key)}} ${{label}}: ${{fmtScore(baseline.value)}}`;
+          svg.insertAdjacentHTML('beforeend', `<line x1="${{x1}}" y1="${{y}}" x2="${{x2}}" y2="${{y}}" stroke="${{style.color}}" stroke-width="${{style.width}}" stroke-dasharray="${{style.dash}}"><title>${{html(title)}}</title></line>`);
+          if (groupW > 100) {{
+            const labelY = Math.max(padTop + 12, y - 5 - baselineIndex * 12);
+            svg.insertAdjacentHTML('beforeend', `<text x="${{x2}}" y="${{labelY}}" text-anchor="end" font-size="10" fill="${{style.color}}">${{html(fmtScore(baseline.value))}}</text>`);
+          }}
+        }});
+      }});
+
       metricKeys.forEach((key, i) => {{
         const label = metricLabel(key);
         const x = padLeft + i * groupW + groupW / 2;
         svg.insertAdjacentHTML('beforeend', `<text x="${{x}}" y="${{height - 40}}" text-anchor="middle" font-size="12" fill="#475467">${{html(label)}}<title>${{html(key)}}</title></text>`);
+      }});
+
+      visibleBaselineKinds.forEach((kind, i) => {{
+        const style = baselineStyles[kind] || baselineStyles.default;
+        const y = 22 + i * 18;
+        svg.insertAdjacentHTML('beforeend', `<line x1="${{padLeft}}" y1="${{y}}" x2="${{padLeft + 24}}" y2="${{y}}" stroke="${{style.color}}" stroke-width="${{style.width}}" stroke-dasharray="${{style.dash}}" />`);
+        svg.insertAdjacentHTML('beforeend', `<text x="${{padLeft + 32}}" y="${{y + 4}}" font-size="12" fill="#1f2937">${{html(style.label)}}</text>`);
       }});
 
       chartItems.forEach((r, i) => {{
@@ -539,11 +789,16 @@ def render_dashboard_html(data):
 
 def main():
     parser = argparse.ArgumentParser(description="Update static evaluation dashboard from an lmms-eval results.json file.")
-    parser.add_argument("result_file", help="Path to results.json")
+    parser.add_argument("result_file", nargs="?", help="Path to results.json")
     parser.add_argument("--data_path", default=str(DEFAULT_DATA_PATH))
     parser.add_argument("--html_path", default=str(DEFAULT_HTML_PATH))
+    parser.add_argument("--baseline_excel", default=None, help="Optional Excel question bank used to calculate baseline reference lines.")
     args = parser.parse_args()
-    print(json.dumps(update_dashboard_from_result_file(args.result_file, args.data_path, args.html_path), ensure_ascii=False, indent=2))
+    if args.result_file:
+        result = update_dashboard_from_result_file(args.result_file, args.data_path, args.html_path, args.baseline_excel)
+    else:
+        result = refresh_dashboard(args.data_path, args.html_path, args.baseline_excel)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

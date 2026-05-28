@@ -144,7 +144,7 @@ for model in "${models[@]}"; do
     "llava_one_vision_1_5_8b")
         model_family="llava_onevision_1_5"
         model="llava_one_vision_1_5_8b_${num_frames}f"
-        model_args="pretrained=~/.cache/modelscope/hub/models/lmms-lab/LLaVA-OneVision-1.5-8B-Instruct,attn_implementation=flash_attention_2,conv_template=qwen_1_5,model_name=llava_qwen,max_frames_num=$num_frames,max_pixels=602112,device_map=auto"
+        model_args="pretrained=~/.cache/modelscope/hub/models/lmms-lab/LLaVA-OneVision-1.5-8B-Instruct,attn_implementation=flash_attention_2,conv_template=qwen_1_5,model_name=llava_qwen,max_frames_num=$num_frames,max_pixels=602112"
         ;;
     "llava_one_vision_qwen2_72b_ov")
         model_family="llava_onevision"

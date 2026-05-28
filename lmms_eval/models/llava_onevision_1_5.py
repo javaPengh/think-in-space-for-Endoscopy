@@ -36,6 +36,7 @@ torch.backends.cuda.matmul.allow_tf32 = True
 
 DEFAULT_IMAGE_TOKEN = "<image>"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+QWEN2VL_DEFAULT_VIDEO_MAX_PIXELS = 28 * 28 * 768
 VICUNA_CHAT_TEMPLATE = "{% for message in messages %}{% if loop.index0 == 0 %}A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user's questions. USER: {{ message['content'] }} {% elif message['role'] == 'user' %}USER: {{ message['content'] }} {% else %} ASSISTANT: {{ message['content'] }}{{ eos_token }}{% endif %}{% endfor %}{% if add_generation_prompt %}{{ 'ASSISTANT:' }}{% endif %}"
 
 # Determine best attention implementation
@@ -143,6 +144,12 @@ class Llava_OneVision_1_5(lmms):
         if self.max_pixels is not None:
             processor_kwargs["max_pixels"] = self.max_pixels
         self._processor = AutoProcessor.from_pretrained(pretrained, **processor_kwargs)
+        self._apply_processor_max_pixels()
+        if self.max_pixels == QWEN2VL_DEFAULT_VIDEO_MAX_PIXELS:
+            eval_logger.info(
+                "LLaVA-OneVision-1.5 max_pixels=%s matches Qwen2-VL's default video max_pixels; lower it to reduce video visual tokens.",
+                self.max_pixels,
+            )
         if hasattr(self._processor, "tokenizer"):
             self._processor.tokenizer.padding_side = "left"
             self._tokenizer = self._processor.tokenizer
@@ -284,6 +291,30 @@ class Llava_OneVision_1_5(lmms):
 
         return text
 
+    def _apply_processor_max_pixels(self):
+        if self.max_pixels is None:
+            return
+
+        for component_name in ("image_processor", "video_processor"):
+            processor_component = getattr(self._processor, component_name, None)
+            if processor_component is None:
+                continue
+
+            size = getattr(processor_component, "size", None)
+            if isinstance(size, dict):
+                size["longest_edge"] = self.max_pixels
+            if hasattr(processor_component, "max_pixels"):
+                processor_component.max_pixels = self.max_pixels
+
+    def _vision_processor_kwargs(self, task_type: str):
+        if self.max_pixels is None:
+            return {}
+        if task_type == "video":
+            return {"videos_kwargs": {"max_pixels": self.max_pixels}}
+        if task_type == "image":
+            return {"images_kwargs": {"max_pixels": self.max_pixels}}
+        return {}
+
     def _drop_unsupported_model_inputs(self, model_inputs):
         # LLaVA-OneVision-1.5 uses Qwen2.5-VL's processor, which may emit this
         # timing field, but the remote LLaVA model forward does not consume it.
@@ -304,12 +335,15 @@ class Llava_OneVision_1_5(lmms):
                 summary[key] = type(value).__name__
 
         image_processor = getattr(self._processor, "image_processor", None)
+        video_processor = getattr(self._processor, "video_processor", None)
         eval_logger.info(
-            "First LLaVA-OneVision-1.5 %s model inputs: %s; processor=%s; image_processor=%s",
+            "First LLaVA-OneVision-1.5 %s model inputs: %s; processor=%s; image_processor=%s; video_processor=%s; max_pixels=%s",
             task_type,
             summary,
             type(self._processor).__name__,
             type(image_processor).__name__ if image_processor is not None else None,
+            type(video_processor).__name__ if video_processor is not None else None,
+            self.max_pixels,
         )
         self._logged_first_model_inputs = True
 
@@ -420,9 +454,9 @@ class Llava_OneVision_1_5(lmms):
             if visuals is None:
                 model_inputs = self._processor(text=[prompt_and_continuation], return_tensors="pt")
             elif task_type == "video":
-                model_inputs = self._processor(text=[prompt_and_continuation], videos=[visuals], return_tensors="pt")
+                model_inputs = self._processor(text=[prompt_and_continuation], videos=[visuals], return_tensors="pt", **self._vision_processor_kwargs(task_type))
             else:
-                model_inputs = self._processor(text=[prompt_and_continuation], images=visuals, return_tensors="pt")
+                model_inputs = self._processor(text=[prompt_and_continuation], images=visuals, return_tensors="pt", **self._vision_processor_kwargs(task_type))
             model_inputs = self._drop_unsupported_model_inputs(model_inputs)
 
             model_inputs = model_inputs.to(self.device, self.model.dtype)
@@ -606,9 +640,9 @@ class Llava_OneVision_1_5(lmms):
                 model_inputs = self._processor(text=question_input, return_tensors="pt")
             elif task_type == "video":
                 # 传入 videos 参数
-                model_inputs = self._processor(text=question_input, videos=[visuals_for_batch], return_tensors="pt")
+                model_inputs = self._processor(text=question_input, videos=[visuals_for_batch], return_tensors="pt", **self._vision_processor_kwargs(task_type))
             else:
-                model_inputs = self._processor(text=question_input, images=visuals_for_batch, return_tensors="pt")
+                model_inputs = self._processor(text=question_input, images=visuals_for_batch, return_tensors="pt", **self._vision_processor_kwargs(task_type))
             model_inputs = self._drop_unsupported_model_inputs(model_inputs)
             self._log_model_inputs_once(model_inputs, task_type)
 
