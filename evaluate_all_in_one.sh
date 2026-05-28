@@ -20,9 +20,10 @@ use_wandb_args=false
 video_sampling_strategy="uniform"
 video_sample_fps=""
 video_input_mode=""
+visual_input_mode="visual"
 cuda_visible_devices="${CUDA_VISIBLE_DEVICES:-0}"
 
-available_models="llava_one_vision_qwen2_0p5b_ov,llava_one_vision_qwen2_7b_ov,llava_next_video_7b_qwen2,llama3_vila1p5_8b,llama3_longvila_8b_128frames,longva_7b,internvl2_2b,internvl2_8b"
+available_models="gemini_3_1_pro,gemini_3_1_flash_lite,gpt5_4,llava_one_vision_1_5_8b,llava_next_video_7b_qwen2,internvl3_5_2b,internvl3_5_8b,qwen3vl_8b,qwen3vl_32b,qwen2_5vl_72b_api,qwen3vl_235b_a22b_api,internvideo2_5_chat_8b"
 IFS=',' read -r -a models <<<"$available_models"
 
 while [[ $# -gt 0 ]]; do
@@ -72,6 +73,10 @@ while [[ $# -gt 0 ]]; do
         video_input_mode="$2"
         shift 2
         ;;
+    --visual_input_mode)
+        visual_input_mode="$2"
+        shift 2
+        ;;
     --cuda_visible_devices)
         cuda_visible_devices="$2"
         shift 2
@@ -82,6 +87,19 @@ while [[ $# -gt 0 ]]; do
         ;;
     esac
 done
+
+case "$visual_input_mode" in
+"visual"|"none")
+    ;;
+*)
+    echo "Unsupported --visual_input_mode: $visual_input_mode (expected: visual or none)"
+    exit 1
+    ;;
+esac
+
+export VSI_VISUAL_INPUT_MODE="$visual_input_mode"
+requested_num_processes="$num_processes"
+requested_launcher="$launcher"
 
 export CUDA_VISIBLE_DEVICES="$cuda_visible_devices"
 if [ -z "$CUDA_VISIBLE_DEVICES" ]; then
@@ -98,6 +116,8 @@ fi
 
 for model in "${models[@]}"; do
     echo "Start evaluating $model..."
+    num_processes="$requested_num_processes"
+    launcher="$requested_launcher"
 
     case "$model" in
     "gemini_3_1_pro")
@@ -190,24 +210,29 @@ for model in "${models[@]}"; do
         ;;
     esac
 
-    # Add sampling strategy into model_args
-    if [ -n "$video_sample_fps" ]; then
-        model_args="$model_args,video_sampling_strategy=fps,video_sample_fps=$video_sample_fps"
-    elif [ "$video_sampling_strategy" = "specific" ]; then
-        model_args="$model_args,video_sampling_strategy=specific,keyframe_mapping_path=data/keyframe_mapping.json"
-    elif [ "$video_sampling_strategy" != "uniform" ]; then
-        model_args="$model_args,video_sampling_strategy=$video_sampling_strategy"
-    fi
-    if [ -n "$video_input_mode" ]; then
-        case "$model_family" in
-        "qwen2_5vl_72b_api"|"qwen3vl_235b_a22b_api")
-            model_args="$model_args,video_input_mode=$video_input_mode"
-            model="${model}_${video_input_mode}"
-            ;;
-        *)
-            echo "Warning: --video_input_mode is only supported by Qwen API adapters; ignoring for $model_family"
-            ;;
-        esac
+    if [ "$visual_input_mode" = "none" ]; then
+        model_args="$model_args,visual_input_mode=none"
+        model="${model}_blind"
+    else
+        # Add sampling strategy into model_args
+        if [ -n "$video_sample_fps" ]; then
+            model_args="$model_args,video_sampling_strategy=fps,video_sample_fps=$video_sample_fps"
+        elif [ "$video_sampling_strategy" = "specific" ]; then
+            model_args="$model_args,video_sampling_strategy=specific,keyframe_mapping_path=data/keyframe_mapping.json"
+        elif [ "$video_sampling_strategy" != "uniform" ]; then
+            model_args="$model_args,video_sampling_strategy=$video_sampling_strategy"
+        fi
+        if [ -n "$video_input_mode" ]; then
+            case "$model_family" in
+            "qwen2_5vl_72b_api"|"qwen3vl_235b_a22b_api")
+                model_args="$model_args,video_input_mode=$video_input_mode"
+                model="${model}_${video_input_mode}"
+                ;;
+            *)
+                echo "Warning: --video_input_mode is only supported by Qwen API adapters; ignoring for $model_family"
+                ;;
+            esac
+        fi
     fi
 
     if [ "$launcher" = "python" ]; then

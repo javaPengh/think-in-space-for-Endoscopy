@@ -17,6 +17,7 @@ from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
 from lmms_eval.api.instance import Instance
 from lmms_eval.api.model import lmms
 from lmms_eval.api.registry import register_model
+from lmms_eval.models.model_utils.blind_eval import is_blind_mode, normalize_visual_input_mode, strip_visual_context
 from loguru import logger as eval_logger
 
 DEFAULT_GEN_KWARGS = dict(
@@ -42,10 +43,12 @@ class Qwen3VL(lmms):
         video_sampling_strategy: str = "uniform",
         video_sample_fps: float = None,
         keyframe_mapping_path: str = "data/keyframe_mapping.json",
+        visual_input_mode: str = "visual",
         **kwargs,
     ):
         super().__init__()
 
+        self.visual_input_mode = normalize_visual_input_mode(visual_input_mode)
         self.max_frames_num = int(max_frames_num)
         self.video_sample_fps = None if video_sample_fps in (None, "", "none", "None") else float(video_sample_fps)
         self.video_sampling_strategy = str(video_sampling_strategy).lower()
@@ -53,13 +56,14 @@ class Qwen3VL(lmms):
             self.video_sampling_strategy = "fps"
         if self.video_sampling_strategy in {"fps_uniform", "uniform_fps"}:
             self.video_sampling_strategy = "fps"
-        if self.video_sampling_strategy not in {"uniform", "specific", "fps"}:
-            raise ValueError(f"Unsupported video_sampling_strategy for Qwen3VL: {self.video_sampling_strategy}")
-        if self.video_sampling_strategy == "fps" and (self.video_sample_fps is None or self.video_sample_fps <= 0):
-            raise ValueError("video_sample_fps must be a positive number when video_sampling_strategy='fps'.")
+        if not is_blind_mode(self.visual_input_mode):
+            if self.video_sampling_strategy not in {"uniform", "specific", "fps"}:
+                raise ValueError(f"Unsupported video_sampling_strategy for Qwen3VL: {self.video_sampling_strategy}")
+            if self.video_sampling_strategy == "fps" and (self.video_sample_fps is None or self.video_sample_fps <= 0):
+                raise ValueError("video_sample_fps must be a positive number when video_sampling_strategy='fps'.")
 
         self.keyframe_mapping = {}
-        if self.video_sampling_strategy == "specific":
+        if self.video_sampling_strategy == "specific" and not is_blind_mode(self.visual_input_mode):
             if not os.path.exists(keyframe_mapping_path):
                 raise ValueError(f"Keyframe mapping file not found at {keyframe_mapping_path}. Required when video_sampling_strategy is 'specific'.")
             import json
@@ -317,6 +321,7 @@ class Qwen3VL(lmms):
             "max_pixels": self.max_pixels,
             "video_sampling_strategy": self.video_sampling_strategy,
             "video_sample_fps": self.video_sample_fps,
+            "visual_input_mode": self.visual_input_mode,
             "sample_frames_version": self.sample_frames_version,
             "token_usage": aggregated_usage,
             "note": "input_tokens are counted from processor-produced input_ids; output_tokens are newly generated token ids.",
@@ -332,6 +337,8 @@ class Qwen3VL(lmms):
         return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value)).strip("_") or "unknown"
 
     def _sample_frames_run_label(self):
+        if is_blind_mode(self.visual_input_mode):
+            return "blind"
         if self.video_sampling_strategy == "fps":
             fps_label = f"{self.video_sample_fps:g}".replace(".", "p")
             return f"{fps_label}fps"
@@ -417,7 +424,12 @@ class Qwen3VL(lmms):
     def _generate_from_messages(self, messages, gen_kwargs, media_type):
         text = self._processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         image_inputs, video_inputs = process_vision_info(messages)
-        inputs = self._processor(text=[text], images=image_inputs, videos=video_inputs, padding=True, return_tensors="pt")
+        processor_kwargs = {"text": [text], "padding": True, "return_tensors": "pt"}
+        if image_inputs:
+            processor_kwargs["images"] = image_inputs
+        if video_inputs:
+            processor_kwargs["videos"] = video_inputs
+        inputs = self._processor(**processor_kwargs)
         inputs = inputs.to(self._device)
         input_tokens = int(inputs.input_ids.numel())
 
@@ -449,8 +461,23 @@ class Qwen3VL(lmms):
                 if k not in gen_kwargs:
                     gen_kwargs[k] = v
 
-            media_type, media_path = self._get_media_info(doc_to_visual(self.task_dict[task][split][doc_id]))
-            if media_type == "image":
+            if is_blind_mode(self.visual_input_mode):
+                contexts = strip_visual_context(contexts)
+                media_type, media_path = "text", None
+            else:
+                media_type, media_path = self._get_media_info(doc_to_visual(self.task_dict[task][split][doc_id]))
+            if media_type == "text":
+                pbar.set_postfix_str("Text")
+                messages = [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": f"{contexts}"},
+                        ],
+                    }
+                ]
+                output_text = self._generate_from_messages(messages, gen_kwargs, media_type)
+            elif media_type == "image":
                 unique_image_name = os.path.join(*str(media_path).split(os.sep)[-3:])
                 pbar.set_postfix_str(f"Image: {unique_image_name}")
                 image_content = {

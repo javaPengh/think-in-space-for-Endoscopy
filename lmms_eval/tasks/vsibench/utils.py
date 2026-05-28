@@ -108,6 +108,10 @@ def _doc_answer_type(doc):
     raise ValueError(f"Unknown question type without answer_type: {question_type}")
 
 
+def _is_blind_visual_input_mode():
+    return str(os.getenv("VSI_VISUAL_INPUT_MODE", "visual")).strip().lower() == "none"
+
+
 def _metrics_for_answer_type(answer_type):
     if answer_type == ANSWER_TYPE_MULTIPLE_CHOICE:
         return METRICS_FOR_MCA
@@ -137,17 +141,20 @@ def vsibench_doc_to_text(doc, lmms_eval_specific_kwargs=None):
     lmms_eval_specific_kwargs = lmms_eval_specific_kwargs or {}
     question = doc["question"]
 
-    default_pre_prompt = "This is an image." if _doc_media_type(doc) == "image" else "These are frames of a video."
-    pre_prompt = lmms_eval_specific_kwargs.get("pre_prompt", "") or default_pre_prompt
+    if _is_blind_visual_input_mode():
+        pre_prompt = ""
+    else:
+        default_pre_prompt = "This is an image." if _doc_media_type(doc) == "image" else "These are frames of a video."
+        pre_prompt = lmms_eval_specific_kwargs.get("pre_prompt", "") or default_pre_prompt
     
     answer_type = _doc_answer_type(doc)
     if answer_type == ANSWER_TYPE_NUMERIC:
         post_prompt = lmms_eval_specific_kwargs.get("na_post_prompt", "") or "Please answer the question using a single word or phrase."
-        return pre_prompt + "\n" + question + "\n" + post_prompt
+        return "\n".join([part for part in [pre_prompt, question, post_prompt] if part])
     elif answer_type == ANSWER_TYPE_MULTIPLE_CHOICE:
         options = "Options:\n" + "\n".join(doc["options"])
         post_prompt = lmms_eval_specific_kwargs.get("mca_post_prompt", "") or "Answer with the option's letter from the given choices directly."
-        return "\n".join([pre_prompt, question, options, post_prompt])
+        return "\n".join([part for part in [pre_prompt, question, options, post_prompt] if part])
     else:
         raise ValueError(f"Unknown answer type: {answer_type}")
 

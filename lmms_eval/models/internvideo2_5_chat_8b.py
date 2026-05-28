@@ -17,6 +17,7 @@ from transformers import AutoConfig, AutoModel, AutoTokenizer
 from lmms_eval.api.instance import Instance
 from lmms_eval.api.model import lmms
 from lmms_eval.api.registry import register_model
+from lmms_eval.models.model_utils.blind_eval import is_blind_mode, normalize_visual_input_mode, strip_visual_context
 from loguru import logger as eval_logger
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
@@ -232,16 +233,18 @@ class InternVideo2_5_Chat(lmms):
         max_frames_num: int = 32,
         video_sampling_strategy: str = "uniform",
         keyframe_mapping_path: str = "data/keyframe_mapping.json",
+        visual_input_mode: str = "visual",
         **kwargs,
     ):
         super().__init__()
+        self.visual_input_mode = normalize_visual_input_mode(visual_input_mode)
         self.path = pretrained
         self.modality = modality
         self.max_frames_num = max_frames_num
         self.sample_frames_version = None
         self.video_sampling_strategy = video_sampling_strategy
         self.keyframe_mapping = {}
-        if self.video_sampling_strategy == "specific":
+        if self.video_sampling_strategy == "specific" and not is_blind_mode(self.visual_input_mode):
             import os
             if not os.path.exists(keyframe_mapping_path):
                 raise ValueError(f"Keyframe mapping file not found at {keyframe_mapping_path}. Required when video_sampling_strategy is 'specific'.")
@@ -482,7 +485,11 @@ class InternVideo2_5_Chat(lmms):
             for k in pop_keys:
                 gen_kwargs.pop(k)
 
-            media_type, visuals = self._get_media_inputs(doc_to_visual(self.task_dict[task][split][doc_id]))
+            if is_blind_mode(self.visual_input_mode):
+                contexts = strip_visual_context(contexts)
+                media_type, visuals = "text", []
+            else:
+                media_type, visuals = self._get_media_inputs(doc_to_visual(self.task_dict[task][split][doc_id]))
             if visuals:
                 if media_type == "image":
                     visual_token_state = self._capture_visual_token_state()

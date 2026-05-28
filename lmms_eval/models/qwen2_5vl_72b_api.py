@@ -19,6 +19,7 @@ from tqdm import tqdm
 from lmms_eval.api.instance import Instance
 from lmms_eval.api.model import lmms
 from lmms_eval.api.registry import register_model
+from lmms_eval.models.model_utils.blind_eval import is_blind_mode, normalize_visual_input_mode, strip_visual_context
 from lmms_eval.models.model_utils.token_usage import TokenUsageTracker, extract_openai_chat_usage
 from loguru import logger as eval_logger
 
@@ -53,29 +54,32 @@ class Qwen2_5VL_72B_API(lmms):
         video_sample_fps: float = None,
         video_input_mode: str = "frames",
         dashscope_base_http_api_url: str = None,
+        visual_input_mode: str = "visual",
         **kwargs,
     ):
         super().__init__()
 
         self.model_version = model_version
         self.modality = modality
+        self.visual_input_mode = normalize_visual_input_mode(visual_input_mode)
         self.max_frames_num = int(max_frames_num)
         self.video_fps = float(video_fps)
         self.video_sampling_strategy = video_sampling_strategy
         self.video_sample_fps = None if video_sample_fps in (None, "") else float(video_sample_fps)
         self.video_input_mode = video_input_mode
         self.dashscope_base_http_api_url = dashscope_base_http_api_url or os.getenv("DASHSCOPE_BASE_HTTP_API_URL")
-        if self.video_input_mode not in {"frames", "file"}:
-            raise ValueError(f"Unsupported video_input_mode for Qwen2.5-VL-72B API: {self.video_input_mode}")
-        if self.video_input_mode == "file" and self.video_sampling_strategy == "uniform" and self.video_sample_fps is None:
-            self.video_sampling_strategy = "fps"
-            self.video_sample_fps = self.video_fps
-        if self.video_sampling_strategy not in {"uniform", "specific", "fps"}:
-            raise ValueError(f"Unsupported video_sampling_strategy for Qwen2.5-VL-72B API: {self.video_sampling_strategy}")
-        if self.video_sampling_strategy == "fps" and (self.video_sample_fps is None or self.video_sample_fps <= 0):
-            raise ValueError("video_sample_fps must be a positive number when video_sampling_strategy is 'fps'.")
-        if self.video_input_mode == "file" and self.video_sampling_strategy == "specific":
-            raise ValueError("video_input_mode='file' cannot use specific keyframes because server-side video upload only accepts fps-based sampling.")
+        if not is_blind_mode(self.visual_input_mode):
+            if self.video_input_mode not in {"frames", "file"}:
+                raise ValueError(f"Unsupported video_input_mode for Qwen2.5-VL-72B API: {self.video_input_mode}")
+            if self.video_input_mode == "file" and self.video_sampling_strategy == "uniform" and self.video_sample_fps is None:
+                self.video_sampling_strategy = "fps"
+                self.video_sample_fps = self.video_fps
+            if self.video_sampling_strategy not in {"uniform", "specific", "fps"}:
+                raise ValueError(f"Unsupported video_sampling_strategy for Qwen2.5-VL-72B API: {self.video_sampling_strategy}")
+            if self.video_sampling_strategy == "fps" and (self.video_sample_fps is None or self.video_sample_fps <= 0):
+                raise ValueError("video_sample_fps must be a positive number when video_sampling_strategy is 'fps'.")
+            if self.video_input_mode == "file" and self.video_sampling_strategy == "specific":
+                raise ValueError("video_input_mode='file' cannot use specific keyframes because server-side video upload only accepts fps-based sampling.")
         self.timeout = timeout
         self.max_retries = max_retries
         self.retry_sleep = retry_sleep
@@ -94,7 +98,7 @@ class Qwen2_5VL_72B_API(lmms):
             "Content-Type": "application/json",
         }
 
-        if self.video_sampling_strategy == "specific":
+        if self.video_sampling_strategy == "specific" and not is_blind_mode(self.visual_input_mode):
             if not os.path.exists(keyframe_mapping_path):
                 raise ValueError(f"Keyframe mapping file not found at {keyframe_mapping_path}. Required when video_sampling_strategy is 'specific'.")
             with open(keyframe_mapping_path, "r", encoding="utf-8") as f:
@@ -301,6 +305,7 @@ class Qwen2_5VL_72B_API(lmms):
             "video_input_mode": self.video_input_mode,
             "jpeg_quality": self.jpeg_quality,
             "video_fps": self.video_fps,
+            "visual_input_mode": self.visual_input_mode,
         }
         return hashlib.sha256(json.dumps(key_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
@@ -404,10 +409,17 @@ class Qwen2_5VL_72B_API(lmms):
 
         for contexts, gen_kwargs, doc_to_visual, doc_id, task, split in [reg.args for reg in requests]:
             gen_kwargs = self._normalize_gen_kwargs(gen_kwargs)
-            media_type, media_path = self._get_media_info(doc_to_visual(self.task_dict[task][split][doc_id]))
+            if is_blind_mode(self.visual_input_mode):
+                contexts = strip_visual_context(contexts)
+                media_type, media_path = "text", None
+            else:
+                media_type, media_path = self._get_media_info(doc_to_visual(self.task_dict[task][split][doc_id]))
 
             frame_indices = None
-            if media_type == "image":
+            if media_type == "text":
+                pbar.set_postfix_str("Text")
+                content = [{"type": "text", "text": contexts}]
+            elif media_type == "image":
                 unique_image_name = os.path.join(*str(media_path).split(os.sep)[-3:])
                 pbar.set_postfix_str(f"Image: {unique_image_name}")
                 content = [

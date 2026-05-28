@@ -1,131 +1,113 @@
-<div align="center" style="font-family: charter;">
+# VSI-Bench Evaluation
 
-<h1><img src="docs/resources/icons/brain.ico" width="4%"/><i>Thinking in Space</i>:</br> How Multimodal Large Language Models See, Remember and Recall Spaces</h1>
+本项目基于 `lmms-eval` 评估框架，用于在 VSI-Bench 上评估多模态模型的空间理解能力。统一评估入口为 `evaluate_all_in_one.sh`。
 
-<img src="docs/resources/preview.png" width="50%"/>
-<br />
+评估结果和 token 消耗会在评估结束后写入 `logs/`，并通过 `tools/update_eval_dashboard.py` 汇总到 `docs/eval_dashboard.html`。
 
-<a href="https://arxiv.org/abs/2412.14171" target="_blank">
-    <img alt="arXiv" src="https://img.shields.io/badge/arXiv-thinking--in--space-red?logo=arxiv" height="20" />
-</a>
-<a href="https://vision-x-nyu.github.io/thinking-in-space.github.io/" target="_blank">
-    <img alt="Website" src="https://img.shields.io/badge/🌎_Website-thinking--in--space-blue.svg" height="20" />
-</a>
-<a href="https://huggingface.co/datasets/nyu-visionx/VSI-Bench" target="_blank">
-    <img alt="HF Dataset: VSI-Bench" src="https://img.shields.io/badge/%F0%9F%A4%97%20_Benchmark-VSI--Bench-ffc107?color=ffc107&logoColor=white" height="20" />
-</a>
+## 支持模型
 
-<div>
-    <a href="https://jihanyang.github.io/" target="_blank">Jihan Yang</a><sup>1*</sup>,</span>
-    <a href="https://github.com/vealocia" target="_blank">Shusheng Yang</a><sup>1*</sup>, </span>
-    <a href="https://anjaliwgupta.com/" target="_blank">Anjali W. Gupta</a><sup>1*</sup>,</span>
-    <a href="https://rilynhan.github.io" target="_blank">Rilyn Han</a><sup>2*</sup>,</span>
-    <a href="https://profiles.stanford.edu/fei-fei-li" target="_blank">Li Fei-Fei</a><sup>3</sup>,</span>
-    <a href="https://www.sainingxie.com/" target="_blank">Saining Xie</a><sup>1</sup>,</span>
-</div>
+当前 `evaluate_all_in_one.sh` 支持以下模型名：
 
-<div>
-    <sup>1</sup>New York University&emsp;
-    <sup>2</sup>Yale University&emsp;
-    <sup>3</sup>Stanford University&emsp;
-</div>
+| 模型名 | 类型 |
+| --- | --- |
+| `gemini_3_1_pro` | API |
+| `gemini_3_1_flash_lite` | API |
+| `gpt5_4` | API |
+| `llava_one_vision_1_5_8b` | 本地模型 |
+| `llava_next_video_7b_qwen2` | 本地模型 |
+| `internvl3_5_2b` | 本地模型 |
+| `internvl3_5_8b` | 本地模型 |
+| `qwen3vl_8b` | 本地模型 |
+| `qwen3vl_32b` | 本地模型 |
+| `qwen2_5vl_72b_api` | API |
+| `qwen3vl_235b_a22b_api` | API |
+| `internvideo2_5_chat_8b` | 本地模型 |
 
-<img src="docs/resources/teaser.png" width="100%"/>
-<p align="justify"><i>Whether at home, in the workplace, or elsewhere, the ability to perceive a space, remember its layout, and retrieve this spatial information to answer questions on demand is a key aspect of visual-spatial intelligence. Recent Multimodal LLMs can understand general videos, but can they "think spatially" when presented with a video recording of an environment? Can they build an accurate, implicit "cognitive map" that allows them to answer questions about a space? What are the strengths and limitations of using MLLMs to enhance spatial intelligence? We dig into these questions by setting up video data for MLLMs to watch, building a VQA benchmark to check their recall, and examining what the MLLMs actually remember and understand.</i></p>
+可以用逗号一次评估多个模型，也可以使用 `--model all` 评估全部支持模型。
 
-</div>
+## 支持评估模式
 
-## Release
-- `2025-08-05` :hearts: We release the meta information used in our VSIBench! Check out at `/data/meta_info`!
-- `2025-02-27` :hearts: Our paper `Thinking-in-Space` is accepted by CVPR 2025 as Oral! See u in Nashville!
-- `2024-12-19` :rocket: We released our VSI-Bench and corresponding evaluation code.
+| 模式 | 参数 | 说明 |
+| --- | --- | --- |
+| 均匀采样 | `--num_frames N` | 从视频中均匀采样 N 帧，默认 `16` 帧。 |
+| 自己控制 fps 采样 | `--video_sample_fps F` | 本地按 F fps 抽帧后送给模型。 |
+| 指定关键帧采样 | `--video_sampling_strategy specific` | 使用 `data/keyframe_mapping.json` 中的关键帧。 |
+| 平台控制 fps 采样 | `--video_input_mode file --video_sample_fps F` | 仅 Qwen API 模型支持，上传本地视频文件，由 DashScope 按 fps 抽帧。 |
+| 盲测 | `--visual_input_mode none` | 不提供图片或视频，只把问题文本送给模型。 |
+| 指定 CUDA 编号 | `--cuda_visible_devices 0,1` | 指定本次评估可见的 GPU 编号，会写入 `CUDA_VISIBLE_DEVICES`。 |
 
-## Contents
+## 命令示例
 
-- [Release](#release)
-- [Contents](#contents)
-- [VSI-Bench](#vsi-bench)
-- [Results](#results)
-- [RUN Your Own Evaluation](#run-your-own-evaluation)
-  - [Benchmark](#benchmark)
-  - [Installation](#installation)
-  - [Evaluation](#evaluation)
-- [Acknowledgement](#acknowledgement)
-- [Citation](#citation)
-
-## VSI-Bench
-
-**Overview:** We introduce VSI-Bench, a benchmark designed to evaluate the visual-spatial intelligence of Multimodal LLMs (MLLMs). VSI-Bench comprises over 5,000 question-answer pairs derived from 288 egocentric videos sourced from the validation sets of public indoor 3D scene reconstruction datasets ScanNet, ScanNet++, and ARKitScenes.
-<img src="docs/resources/task-demo.png" width="100%"/>
-
-**VSI-Bench** includes eight tasks categorized into three types: configurational, measurement estimation, and spatiotemporal. Iteratively refined for quality, VSI-Bench provides a foundational resource for studying the connection between MLLMs and 3D reconstruction.
-<img src="docs/resources/benchmark-stats.png" width="100%"/>
-
-
-## Results
-
-**Evaluation Setups:** We benchmarked 15 video-supporting MLLMs from diverse model families. For proprietary models, we include Gemini-1.5 and GPT-4o. For open-source models, we evaluate models from InternVL2, ViLA, LongViLA, LongVA, LLaVA-OneVision, and LLaVA-NeXT-Video. All evaluations are conducted in zero-shot settings with default prompts and greedy decoding for reproducibility. Tasks are evaluated using either accuracy for Multiple-Choice Answer (MCA) tasks or our proposed Mean Relative Accuracy (MRA) for Numerical Answer (NA) tasks.
-
-<img src="docs/resources/eval-bench.png" width="100%"/>
-
-## RUN Your Own Evaluation
-
-### Benchmark
-
-Our benchmark is hosted on [HuggingFace](https://huggingface.co/datasets/nyu-visionx/VSI-Bench). You can simply access the benchmark data using the following code.
-```python
-# NOTE: pip install datasets
-
-from datasets import load_dataset
-vsi_bench = load_dataset("nyu-visionx/VSI-Bench")
-print(dataset)
-```
-
-### Installation
+### 单进程评估
 
 ```bash
-conda create --name vsibench python=3.10
-conda activate vsibench
-
-git clone git@github.com:vision-x-nyu/thinking-in-space.git
-cd thinking-in-space
-
-git submodule update --init --recursive
-
-cd transformers && pip install -e . && cd ..
-
-pip install -e .
-pip install s2wrapper@git+https://github.com/bfshi/scaling_on_scales
-pip install deepspeed
+bash evaluate_all_in_one.sh --model qwen2_5vl_72b_api --benchmark vsibench --num_processes 1
 ```
 
-### Evaluation
-
-We provide a all-in-one evaluation scripts. You can simply run the following code to start your evaluation.
+### 多进程评估
 
 ```bash
-bash evaluate_all_in_one.sh --model all --num_processes 8 --benchmark vsibench
+bash evaluate_all_in_one.sh --model qwen3vl_8b --benchmark vsibench --num_processes 2
 ```
 
-> Note: The evaluation results for open-source models may differ slightly from our tables due to additional data refinement. We will update the tables and our paper soon.
+### 均匀采样 16 帧
 
-## Limitations
-
-We strive to maintain the highest quality in our benchmark, but some imperfections may persist. If you notice any, we encourage you to reach out and share your valuable feedback!
-
-## Acknowledgement
-
-Our evaluation code is build upon [lmms-eval](https://github.com/EvolvingLMMs-Lab/lmms-eval). We acknowledge their team for providing this excellent toolkit for evaluating multimodal large language models.
-
-## Citation
-
-If you find our paper and code useful in your research, please consider giving us a star :star: and citing our work :pencil: :)
-```
-@article{yang2024think,
-    title={{Thinking in Space: How Multimodal Large Language Models See, Remember and Recall Spaces}},
-    author={Yang, Jihan and Yang, Shusheng and Gupta, Anjali and Han, Rilyn and Fei-Fei, Li and Xie, Saining},
-    year={2024},
-    journal={arXiv preprint arXiv:2412.14171},
-}
+```bash
+bash evaluate_all_in_one.sh --model internvl3_5_8b --benchmark vsibench --num_processes 2 --num_frames 16
 ```
 
+### 均匀采样 32 帧
+
+```bash
+bash evaluate_all_in_one.sh --model qwen3vl_8b --benchmark vsibench --num_processes 2 --num_frames 32
+```
+
+### 自己控制 1fps 采样
+
+```bash
+bash evaluate_all_in_one.sh --model qwen3vl_8b --benchmark vsibench --num_processes 2 --video_sample_fps 1
+```
+
+### 指定关键帧采样
+
+```bash
+bash evaluate_all_in_one.sh --model qwen3vl_8b --benchmark vsibench --num_processes 2 --video_sampling_strategy specific
+```
+
+### Qwen API 上传视频并由平台按 1fps 采样
+
+```bash
+bash evaluate_all_in_one.sh --model qwen2_5vl_72b_api --benchmark vsibench --num_processes 1 --video_input_mode file --video_sample_fps 1
+```
+
+### 盲测
+
+```bash
+bash evaluate_all_in_one.sh --model qwen3vl_8b --benchmark vsibench --num_processes 2 --visual_input_mode none
+```
+
+### 评估多个模型
+
+```bash
+bash evaluate_all_in_one.sh --model qwen3vl_8b,internvl3_5_8b --benchmark vsibench --num_processes 2 --num_frames 16
+```
+
+### 评估全部模型
+
+```bash
+bash evaluate_all_in_one.sh --model all --benchmark vsibench --num_processes 2 --num_frames 16
+```
+
+## 结果汇总
+
+评估完成后，如果需要手动刷新 dashboard，可以执行：
+
+```bash
+python tools/update_eval_dashboard.py logs/YYYYMMDD/vsibench/path/to/results.json
+```
+
+生成或更新后的 dashboard 文件位于：
+
+```text
+docs/eval_dashboard.html
+```

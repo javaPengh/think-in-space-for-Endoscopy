@@ -22,6 +22,7 @@ from lmms_eval import utils
 from lmms_eval.api.instance import Instance
 from lmms_eval.api.model import lmms
 from lmms_eval.api.registry import register_model
+from lmms_eval.models.model_utils.blind_eval import is_blind_mode, normalize_visual_input_mode, strip_visual_context
 from lmms_eval.models.model_utils.load_video import read_video_pyav
 
 # Suppress warnings
@@ -70,7 +71,10 @@ class Llava_OneVision_1_5(lmms):
         token_strategy: Optional[str] = "single",  # could be "single" or "multiple", "multiple" denotes adding multiple <image> tokens for each frame
         video_decode_backend: str = "decord",
         video_sampling_strategy: str = "uniform",
+        video_sample_fps: Optional[float] = None,
         keyframe_mapping_path: str = "data/keyframe_mapping.json",
+        processor_use_fast: Optional[bool] = False,
+        visual_input_mode: str = "visual",
         **kwargs,
     ) -> None:
         super().__init__()
@@ -81,10 +85,17 @@ class Llava_OneVision_1_5(lmms):
         # Do not use kwargs for now
         assert kwargs == {}, f"Unexpected kwargs: {kwargs}"
 
+        self.visual_input_mode = normalize_visual_input_mode(visual_input_mode)
         self.video_sampling_strategy = video_sampling_strategy
+        self.video_sample_fps = None if video_sample_fps in (None, "") else float(video_sample_fps)
+        if not is_blind_mode(self.visual_input_mode):
+            if self.video_sampling_strategy not in {"uniform", "specific", "fps"}:
+                raise ValueError(f"Unsupported video_sampling_strategy for LLaVA-OneVision-1.5: {self.video_sampling_strategy}")
+            if self.video_sampling_strategy == "fps" and (self.video_sample_fps is None or self.video_sample_fps <= 0):
+                raise ValueError("video_sample_fps must be a positive number when video_sampling_strategy is 'fps'.")
         self.keyframe_mapping = {}
         self.sample_frames_version = None
-        if self.video_sampling_strategy == "specific":
+        if self.video_sampling_strategy == "specific" and not is_blind_mode(self.visual_input_mode):
             import os
             if not os.path.exists(keyframe_mapping_path):
                 raise ValueError(f"Keyframe mapping file not found at {keyframe_mapping_path}. Required when video_sampling_strategy is 'specific'.")
@@ -116,6 +127,8 @@ class Llava_OneVision_1_5(lmms):
         self.mm_spatial_pool_stride = mm_spatial_pool_stride
         self.mm_spatial_pool_mode = mm_spatial_pool_mode
         self.video_decode_backend = video_decode_backend
+        self._logged_first_video_sample = False
+        self._logged_first_model_inputs = False
 
         request_flash_attention = attn_implementation == "flash_attention_2" or bool(llava_model_args.get("use_flash_attention_2"))
         self._ensure_flash_attn_varlen_func_compat(request_flash_attention=request_flash_attention)
@@ -126,7 +139,7 @@ class Llava_OneVision_1_5(lmms):
             trust_remote_code=True,
             **llava_model_args,
         )
-        processor_kwargs = {"trust_remote_code": True}
+        processor_kwargs = {"trust_remote_code": True, "use_fast": bool(processor_use_fast)}
         if self.max_pixels is not None:
             processor_kwargs["max_pixels"] = self.max_pixels
         self._processor = AutoProcessor.from_pretrained(pretrained, **processor_kwargs)
@@ -277,6 +290,29 @@ class Llava_OneVision_1_5(lmms):
         model_inputs.pop("second_per_grid_ts", None)
         return model_inputs
 
+    def _log_model_inputs_once(self, model_inputs, task_type: str):
+        if self._logged_first_model_inputs:
+            return
+
+        summary = {}
+        for key, value in model_inputs.items():
+            if hasattr(value, "shape"):
+                summary[key] = tuple(value.shape)
+            elif isinstance(value, (list, tuple)):
+                summary[key] = f"{type(value).__name__}[{len(value)}]"
+            else:
+                summary[key] = type(value).__name__
+
+        image_processor = getattr(self._processor, "image_processor", None)
+        eval_logger.info(
+            "First LLaVA-OneVision-1.5 %s model inputs: %s; processor=%s; image_processor=%s",
+            task_type,
+            summary,
+            type(self._processor).__name__,
+            type(image_processor).__name__ if image_processor is not None else None,
+        )
+        self._logged_first_model_inputs = True
+
     def _flatten_visuals(self, visual):
         if visual is None or visual == []:
             return []
@@ -323,7 +359,7 @@ class Llava_OneVision_1_5(lmms):
             if question_key is None:
                 question_key = str(doc_id)
 
-            if self.video_decode_backend == "decord":
+            if self.video_decode_backend == "decord" or self.video_sampling_strategy in {"specific", "fps"}:
                 frames = self.load_video(media_paths, self.max_frames_num, question_key=question_key, task=task)
             else:
                 frames = read_video_pyav(media_paths[0], num_frm=self.max_frames_num)
@@ -368,7 +404,11 @@ class Llava_OneVision_1_5(lmms):
         pbar = tqdm(total=len(requests), disable=(self.rank != 0), desc="Model Responding")
 
         for contexts, doc_to_target, doc_to_visual, doc_id, task, split in [reg.args for reg in requests]:
-            visual = doc_to_visual(self.task_dict[task][split][doc_id])
+            if is_blind_mode(self.visual_input_mode):
+                contexts = strip_visual_context(contexts)
+                visual = []
+            else:
+                visual = doc_to_visual(self.task_dict[task][split][doc_id])
             continuation = doc_to_target if isinstance(doc_to_target, str) else doc_to_target(self.task_dict[task][split][doc_id])
 
             task_type, visuals = self._load_visual_inputs(visual, doc_id, task, split)
@@ -422,6 +462,8 @@ class Llava_OneVision_1_5(lmms):
             video_path = video_path[0]
             
         total_frame_num = len(vr)
+        if total_frame_num <= 0:
+            raise ValueError(f"Video has no frames: {video_path}")
         
         if self.video_sampling_strategy == "specific":
             found_indices = None
@@ -433,9 +475,35 @@ class Llava_OneVision_1_5(lmms):
             if found_indices is None or len(found_indices) == 0:
                 raise ValueError(f"Specific frame indices not found or empty for question ID: {question_key} in {task}")
             frame_idx = found_indices
+        elif self.video_sampling_strategy == "fps":
+            avg_fps = float(vr.get_avg_fps())
+            if avg_fps <= 0:
+                raise ValueError(f"Cannot use fps sampling because video avg_fps is invalid: {avg_fps}")
+            duration = total_frame_num / avg_fps
+            timestamps = np.arange(0, duration, 1.0 / self.video_sample_fps)
+            if len(timestamps) == 0:
+                timestamps = np.array([0.0])
+            frame_idx = np.floor(timestamps * avg_fps).astype(int).tolist()
+            frame_idx = list(dict.fromkeys(frame_idx))
+            if max_frames_num is not None and len(frame_idx) > int(max_frames_num):
+                keep_indices = np.linspace(0, len(frame_idx) - 1, int(max_frames_num), dtype=int)
+                frame_idx = [frame_idx[i] for i in keep_indices]
         else:
             uniform_sampled_frames = np.linspace(0, total_frame_num - 1, max_frames_num, dtype=int)
             frame_idx = uniform_sampled_frames.tolist()
+        frame_idx = [min(max(0, int(idx)), total_frame_num - 1) for idx in frame_idx]
+
+        if not self._logged_first_video_sample:
+            eval_logger.info(
+                "First LLaVA-OneVision-1.5 video sample: strategy=%s, video_sample_fps=%s, max_frames_num=%s, sampled_frames=%s, total_frames=%s, path=%s",
+                self.video_sampling_strategy,
+                self.video_sample_fps,
+                max_frames_num,
+                len(frame_idx),
+                total_frame_num,
+                video_path,
+            )
+            self._logged_first_video_sample = True
             
         # ====== 新增：持久化保存采样帧用于分析 ======
         import os
@@ -444,7 +512,13 @@ class Llava_OneVision_1_5(lmms):
         from pathlib import Path
         
         extracted_model_name = self.pretrained.split("/")[-1] if "/" in self.pretrained else self.pretrained
-        base_model_dir = os.path.join("sample_frames", f"{extracted_model_name}-{max_frames_num}f")
+        if self.video_sampling_strategy == "fps":
+            sampling_label = f"fps_{self.video_sample_fps:g}".replace(".", "p")
+        elif self.video_sampling_strategy == "specific":
+            sampling_label = "specific"
+        else:
+            sampling_label = f"{max_frames_num}f"
+        base_model_dir = os.path.join("sample_frames", f"{extracted_model_name}-{sampling_label}")
         
         if self.sample_frames_version is None:
             env_key = f"SAMPLE_FRAMES_VERSION_{extracted_model_name}_{max_frames_num}"
@@ -490,7 +564,11 @@ class Llava_OneVision_1_5(lmms):
             batched_contexts, all_gen_kwargs, batched_doc_to_visual, batched_doc_id, batched_task, batched_split = zip(*chunk)
             task = batched_task[0]
             split = batched_split[0]
-            batched_visuals = [batched_doc_to_visual[0](self.task_dict[task][split][ids]) for ids in batched_doc_id]
+            if is_blind_mode(self.visual_input_mode):
+                batched_contexts = tuple(strip_visual_context(context) for context in batched_contexts)
+                batched_visuals = [[] for _ in batched_doc_id]
+            else:
+                batched_visuals = [batched_doc_to_visual[0](self.task_dict[task][split][ids]) for ids in batched_doc_id]
             assert len(batched_visuals) == 1
 
             gen_kwargs = all_gen_kwargs[0]
@@ -510,7 +588,8 @@ class Llava_OneVision_1_5(lmms):
                 messages = []
                 for idx, item in enumerate(question_items):
                     role = "user" if idx % 2 == 0 else "assistant"
-                    content = self._build_user_content(item["value"], visuals_for_batch, task_type) if idx == 0 and role == "user" else item["value"]
+                    item_value = strip_visual_context(item["value"]) if idx == 0 and role == "user" and is_blind_mode(self.visual_input_mode) else item["value"]
+                    content = self._build_user_content(item_value, visuals_for_batch, task_type) if idx == 0 and role == "user" else item_value
                     messages.append({"role": role, "content": content})
                 prompt_question = self._apply_chat_template(messages, add_generation_prompt=True)
             else:
@@ -531,6 +610,7 @@ class Llava_OneVision_1_5(lmms):
             else:
                 model_inputs = self._processor(text=question_input, images=visuals_for_batch, return_tensors="pt")
             model_inputs = self._drop_unsupported_model_inputs(model_inputs)
+            self._log_model_inputs_once(model_inputs, task_type)
 
             model_inputs = model_inputs.to(self.device, self.model.dtype)
 

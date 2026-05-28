@@ -19,6 +19,7 @@ from tqdm import tqdm
 from lmms_eval.api.instance import Instance
 from lmms_eval.api.model import lmms
 from lmms_eval.api.registry import register_model
+from lmms_eval.models.model_utils.blind_eval import is_blind_mode, normalize_visual_input_mode, strip_visual_context
 from lmms_eval.models.model_utils.token_usage import TokenUsageTracker, extract_gemini_usage
 from loguru import logger as eval_logger
 
@@ -49,12 +50,14 @@ class Gemini3_1Pro(lmms):
         cache_dir: str = "api_cache",
         jpeg_quality: int = 95,
         include_frame_metadata: bool = True,
+        visual_input_mode: str = "visual",
         **kwargs,
     ):
         super().__init__()
 
         self.model_version = model_version
         self.modality = modality
+        self.visual_input_mode = normalize_visual_input_mode(visual_input_mode)
         self.max_frames_num = int(max_frames_num)
         self.video_sampling_strategy = video_sampling_strategy
         self.timeout = int(timeout)
@@ -76,7 +79,7 @@ class Gemini3_1Pro(lmms):
             "Content-Type": "application/json",
         }
 
-        if self.video_sampling_strategy == "specific":
+        if self.video_sampling_strategy == "specific" and not is_blind_mode(self.visual_input_mode):
             if not os.path.exists(keyframe_mapping_path):
                 raise ValueError(f"Keyframe mapping file not found at {keyframe_mapping_path}. Required when video_sampling_strategy is 'specific'.")
             with open(keyframe_mapping_path, "r", encoding="utf-8") as f:
@@ -270,6 +273,7 @@ class Gemini3_1Pro(lmms):
             "jpeg_quality": self.jpeg_quality,
             "video_sampling_strategy": self.video_sampling_strategy,
             "include_frame_metadata": self.include_frame_metadata,
+            "visual_input_mode": self.visual_input_mode,
         }
         return hashlib.sha256(json.dumps(key_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
@@ -308,10 +312,17 @@ class Gemini3_1Pro(lmms):
 
         for contexts, gen_kwargs, doc_to_visual, doc_id, task, split in [reg.args for reg in requests]:
             gen_kwargs = self._normalize_gen_kwargs(gen_kwargs)
-            media_type, media_inputs = self._get_media_inputs(doc_to_visual(self.task_dict[task][split][doc_id]))
+            if is_blind_mode(self.visual_input_mode):
+                contexts = strip_visual_context(contexts)
+                media_type, media_inputs = "text", []
+            else:
+                media_type, media_inputs = self._get_media_inputs(doc_to_visual(self.task_dict[task][split][doc_id]))
 
             frame_indices = None
-            if media_type == "image":
+            if media_type == "text":
+                pbar.set_postfix_str("Text")
+                parts = [{"text": contexts}]
+            elif media_type == "image":
                 pbar.set_postfix_str(f"Image: {self._short_path(media_inputs[0])}")
                 parts = self._build_image_parts(media_inputs, contexts)
             elif media_type == "video":

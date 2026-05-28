@@ -41,15 +41,20 @@ def build_run_record(results, result_path):
     model_family = config.get("model") or model_args.get("model_version") or model_args.get("pretrained") or "unknown"
     pretrained = model_args.get("pretrained") or model_args.get("model_version") or model_family
     model = _display_model_name(model_family, pretrained, result_path)
+    visual_input_mode = model_args.get("visual_input_mode", "visual")
     video_input_mode = model_args.get("video_input_mode")
     sampling_strategy = model_args.get("video_sampling_strategy", "uniform")
     video_sample_fps = _number_or_none(model_args.get("video_sample_fps") or model_args.get("video_fps"))
-    if video_input_mode == "file" and sampling_strategy == "uniform" and video_sample_fps is None:
+    if visual_input_mode == "none":
+        sampling_strategy = "blind"
+        video_sample_fps = None
+    elif video_input_mode == "file" and sampling_strategy == "uniform" and video_sample_fps is None:
         sampling_strategy = "fps"
         video_sample_fps = 1
 
     sampling = {
         "strategy": sampling_strategy,
+        "visual_input_mode": visual_input_mode,
         "video_sample_fps": video_sample_fps,
         "max_frames_num": _number_or_none(model_args.get("max_frames_num")),
         "max_pixels": _number_or_none(model_args.get("max_pixels")),
@@ -157,6 +162,13 @@ def _fallback_token_usage(model, sampling):
             except json.JSONDecodeError:
                 continue
             if record.get("model") != model:
+                continue
+            if sampling.get("visual_input_mode") == "none":
+                if record.get("visual_input_mode") != "none":
+                    continue
+                records.append(record)
+                continue
+            if record.get("visual_input_mode") == "none":
                 continue
             if record.get("video_sampling_strategy") != sampling.get("strategy"):
                 continue
@@ -307,6 +319,7 @@ def render_dashboard_html(data):
     const metric = (r, k) => r.metrics && typeof r.metrics[k] === 'number' ? r.metrics[k] : null;
     const samplingLabel = r => {{
       const s = r.sampling || {{}};
+      if (s.visual_input_mode === 'none' || s.strategy === 'blind') return 'blind';
       const mode = s.video_input_mode && s.video_input_mode !== 'frames' ? `_${{s.video_input_mode}}` : '';
       if (s.strategy === 'fps') return `fps_${{s.video_sample_fps ?? 'N/A'}}${{mode}}`;
       if (s.strategy === 'uniform') return `uniform_${{s.max_frames_num ?? 'N/A'}}f${{mode}}`;
