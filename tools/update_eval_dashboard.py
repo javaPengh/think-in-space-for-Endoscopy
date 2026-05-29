@@ -12,6 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DOCS_DIR = REPO_ROOT / "docs"
 DEFAULT_DATA_PATH = DOCS_DIR / "eval_dashboard_data.json"
 DEFAULT_HTML_PATH = DOCS_DIR / "eval_dashboard.html"
+DEFAULT_BASELINE_CACHE_PATH = DOCS_DIR / "eval_baselines.json"
 DEFAULT_BASELINE_EXCEL_PATH = Path(r"C:\Users\a2818\Desktop\QA\抽样测试.xlsx")
 
 CHOICE_ANSWER_TYPES = {"mca", "mcq", "multiple_choice", "choice"}
@@ -23,10 +24,11 @@ QUESTION_TYPE_METRIC_MAP = {
 }
 
 
-def update_dashboard_from_result_file(result_file_path, data_path=None, html_path=None, baseline_excel_path=None):
+def update_dashboard_from_result_file(result_file_path, data_path=None, html_path=None, baseline_excel_path=None, baseline_cache_path=None):
     result_path = Path(result_file_path).expanduser().resolve()
     data_path = Path(data_path or DEFAULT_DATA_PATH).expanduser().resolve()
     html_path = Path(html_path or DEFAULT_HTML_PATH).expanduser().resolve()
+    baseline_cache_path = Path(baseline_cache_path or DEFAULT_BASELINE_CACHE_PATH).expanduser().resolve()
 
     with result_path.open("r", encoding="utf-8") as f:
         results = json.load(f)
@@ -36,7 +38,7 @@ def update_dashboard_from_result_file(result_file_path, data_path=None, html_pat
     runs = [item for item in data.get("runs", []) if item.get("result_path") != run["result_path"]]
     runs.append(run)
     runs.sort(key=lambda item: item.get("timestamp", ""))
-    baselines = _resolve_baselines(data, baseline_excel_path)
+    baselines = _resolve_baselines(data, baseline_excel_path, baseline_cache_path)
     data = {"runs": runs}
     if baselines:
         data["baselines"] = baselines
@@ -44,14 +46,15 @@ def update_dashboard_from_result_file(result_file_path, data_path=None, html_pat
     data_path.parent.mkdir(parents=True, exist_ok=True)
     data_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     html_path.write_text(render_dashboard_html(data), encoding="utf-8")
-    return {"data_path": str(data_path), "html_path": str(html_path), "run_id": run["run_id"]}
+    return {"data_path": str(data_path), "html_path": str(html_path), "baseline_cache_path": str(baseline_cache_path), "run_id": run["run_id"]}
 
 
-def refresh_dashboard(data_path=None, html_path=None, baseline_excel_path=None):
+def refresh_dashboard(data_path=None, html_path=None, baseline_excel_path=None, baseline_cache_path=None):
     data_path = Path(data_path or DEFAULT_DATA_PATH).expanduser().resolve()
     html_path = Path(html_path or DEFAULT_HTML_PATH).expanduser().resolve()
+    baseline_cache_path = Path(baseline_cache_path or DEFAULT_BASELINE_CACHE_PATH).expanduser().resolve()
     data = _read_data(data_path)
-    baselines = _resolve_baselines(data, baseline_excel_path)
+    baselines = _resolve_baselines(data, baseline_excel_path, baseline_cache_path)
     data = {"runs": data.get("runs", [])}
     if baselines:
         data["baselines"] = baselines
@@ -59,7 +62,7 @@ def refresh_dashboard(data_path=None, html_path=None, baseline_excel_path=None):
     data_path.parent.mkdir(parents=True, exist_ok=True)
     data_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     html_path.write_text(render_dashboard_html(data), encoding="utf-8")
-    return {"data_path": str(data_path), "html_path": str(html_path), "baseline_count": sum(len(items) for items in (baselines or {}).get("items", {}).values())}
+    return {"data_path": str(data_path), "html_path": str(html_path), "baseline_cache_path": str(baseline_cache_path), "baseline_count": _baseline_count(baselines)}
 
 
 def build_run_record(results, result_path):
@@ -101,6 +104,7 @@ def build_run_record(results, result_path):
         "model": model,
         "model_family": model_family,
         "pretrained": pretrained,
+        "note": config.get("run_note") or config.get("note") or "",
         "task": task_name,
         "sampling": sampling,
         "metrics": task_metrics,
@@ -156,11 +160,33 @@ def _parse_model_args(model_args):
     return parsed
 
 
-def _resolve_baselines(data, baseline_excel_path=None):
+def update_baseline_cache_from_excel(baseline_excel_path=None, baseline_cache_path=None):
     candidate = _baseline_excel_candidate(baseline_excel_path)
+    if not candidate or not candidate.exists():
+        raise FileNotFoundError(f"Baseline Excel file does not exist: {baseline_excel_path or DEFAULT_BASELINE_EXCEL_PATH}")
+
+    baseline_cache_path = Path(baseline_cache_path or DEFAULT_BASELINE_CACHE_PATH).expanduser().resolve()
+    baselines = build_baseline_records(candidate)
+    _write_baseline_cache(baselines, baseline_cache_path)
+    return {"baseline_cache_path": str(baseline_cache_path), "source_path": str(Path(candidate).expanduser().resolve()), "baseline_count": _baseline_count(baselines)}
+
+
+def _resolve_baselines(data, baseline_excel_path=None, baseline_cache_path=None):
+    candidate = _baseline_excel_candidate(baseline_excel_path)
+    baseline_cache_path = Path(baseline_cache_path or DEFAULT_BASELINE_CACHE_PATH).expanduser().resolve()
     if candidate and candidate.exists():
-        return build_baseline_records(candidate)
-    return data.get("baselines")
+        baselines = build_baseline_records(candidate)
+        _write_baseline_cache(baselines, baseline_cache_path)
+        return baselines
+
+    cached_baselines = _read_baseline_cache(baseline_cache_path)
+    if cached_baselines:
+        return cached_baselines
+
+    baselines = data.get("baselines")
+    if baselines:
+        _write_baseline_cache(baselines, baseline_cache_path)
+    return baselines
 
 
 def _baseline_excel_candidate(baseline_excel_path=None):
@@ -169,6 +195,27 @@ def _baseline_excel_candidate(baseline_excel_path=None):
     if DEFAULT_BASELINE_EXCEL_PATH.exists():
         return DEFAULT_BASELINE_EXCEL_PATH
     return None
+
+
+def _read_baseline_cache(baseline_cache_path):
+    baseline_cache_path = Path(baseline_cache_path).expanduser().resolve()
+    if not baseline_cache_path.exists():
+        return None
+    with baseline_cache_path.open("r", encoding="utf-8") as f:
+        baselines = json.load(f)
+    return baselines if baselines.get("items") else None
+
+
+def _write_baseline_cache(baselines, baseline_cache_path):
+    if not baselines:
+        return
+    baseline_cache_path = Path(baseline_cache_path).expanduser().resolve()
+    baseline_cache_path.parent.mkdir(parents=True, exist_ok=True)
+    baseline_cache_path.write_text(json.dumps(baselines, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _baseline_count(baselines):
+    return sum(len(items) for items in (baselines or {}).get("items", {}).values())
 
 
 def build_baseline_records(excel_path):
@@ -471,6 +518,7 @@ def render_dashboard_html(data):
     table {{ width: max-content; min-width: 100%; border-collapse: collapse; font-size: 13px; }}
     th, td {{ border-bottom: 1px solid var(--line); padding: 9px 8px; text-align: left; vertical-align: top; white-space: nowrap; }}
     th {{ color: var(--muted); font-weight: 600; background: #fafafa; position: sticky; top: 0; }}
+    .note-cell {{ min-width: 180px; max-width: 320px; white-space: normal; overflow-wrap: anywhere; color: #344054; }}
     .table-wrap {{ max-height: 520px; max-width: 100%; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }}
     .pill {{ display: inline-block; padding: 3px 8px; border-radius: 999px; background: #eef4ff; color: #1d4ed8; font-size: 12px; white-space: nowrap; }}
     .empty {{ padding: 30px; text-align: center; color: var(--muted); }}
@@ -723,10 +771,11 @@ def render_dashboard_html(data):
       const preferred = preferredMetrics;
       const keys = [...preferred.filter(k => metricKeys.includes(k)), ...metricKeys.filter(k => !preferred.includes(k)).sort()];
       const visibleMetricKeys = keys.slice(0, 10);
-      const head = ['时间', '模型', '采样', 'Token'];
+      const head = ['时间', '模型', '采样', '备注', 'Token'];
       const header = head.map(h => `<th>${{h}}</th>`).join('') + visibleMetricKeys.map(k => `<th title="${{html(k)}}">${{html(metricLabel(k))}}</th>`).join('') + '<th>操作</th>';
       const rows = items.map(r => `<tr>
         <td>${{html(r.timestamp)}}</td><td>${{html(r.model)}}</td><td><span class="pill">${{html(samplingLabel(r))}}</span></td>
+        <td class="note-cell">${{html(r.note || '')}}</td>
         <td>${{html(fmt(token(r, 'total_tokens')))}} </td>
         ${{visibleMetricKeys.map(k => `<td>${{html(fmt(metric(r, k)))}}</td>`).join('')}}
         <td><button class="danger-btn" type="button" data-delete-run="${{html(r.run_id)}}">删除</button></td>
@@ -793,11 +842,15 @@ def main():
     parser.add_argument("--data_path", default=str(DEFAULT_DATA_PATH))
     parser.add_argument("--html_path", default=str(DEFAULT_HTML_PATH))
     parser.add_argument("--baseline_excel", default=None, help="Optional Excel question bank used to calculate baseline reference lines.")
+    parser.add_argument("--baseline_cache", default=str(DEFAULT_BASELINE_CACHE_PATH), help="JSON cache path for calculated baseline reference lines.")
+    parser.add_argument("--update_baseline_cache_only", action="store_true", help="Only calculate baselines from Excel and write the JSON cache.")
     args = parser.parse_args()
-    if args.result_file:
-        result = update_dashboard_from_result_file(args.result_file, args.data_path, args.html_path, args.baseline_excel)
+    if args.update_baseline_cache_only:
+        result = update_baseline_cache_from_excel(args.baseline_excel, args.baseline_cache)
+    elif args.result_file:
+        result = update_dashboard_from_result_file(args.result_file, args.data_path, args.html_path, args.baseline_excel, args.baseline_cache)
     else:
-        result = refresh_dashboard(args.data_path, args.html_path, args.baseline_excel)
+        result = refresh_dashboard(args.data_path, args.html_path, args.baseline_excel, args.baseline_cache)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

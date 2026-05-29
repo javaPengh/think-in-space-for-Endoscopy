@@ -251,6 +251,11 @@ def parse_eval_args() -> argparse.Namespace:
         help="Timezone for datetime string, e.g. Asia/Singapore, America/New_York, America/Los_Angeles",
     )
     parser.add_argument(
+        "--run_note",
+        default=os.getenv("VSI_RUN_NOTE", ""),
+        help="Free-form note for this evaluation run. It is saved to results.json and shown in the dashboard table.",
+    )
+    parser.add_argument(
         "--hf_hub_log_args",
         type=str,
         default="",

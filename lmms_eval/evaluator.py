@@ -283,6 +283,7 @@ def simple_evaluate(
                 "numpy_seed": numpy_random_seed,
                 "torch_seed": torch_random_seed,
                 "fewshot_seed": fewshot_random_seed,
+                "run_note": getattr(cli_args, "run_note", "") if cli_args is not None else "",
             }
         )
         if hasattr(lm, "get_token_usage_summary"):

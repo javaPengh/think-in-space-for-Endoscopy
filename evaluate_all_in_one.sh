@@ -26,6 +26,7 @@ answer_mode="restricted"
 gen_kwargs=""
 use_gen_kwargs=false
 natural_gen_kwargs="max_new_tokens=256,temperature=0,top_p=1.0,num_beams=1,do_sample=false"
+run_note=""
 
 available_models="gemini_3_1_pro,gemini_3_1_flash_lite,gpt5_4,llava_one_vision_1_5_8b,llava_next_video_7b_qwen2,internvl3_5_2b,internvl3_5_8b,qwen3vl_8b,qwen3vl_32b,qwen2_5vl_72b_api,qwen3vl_235b_a22b_api,internvideo2_5_chat_8b"
 IFS=',' read -r -a models <<<"$available_models"
@@ -94,6 +95,10 @@ while [[ $# -gt 0 ]]; do
         use_gen_kwargs=true
         shift 2
         ;;
+    --run_note|--note)
+        run_note="$2"
+        shift 2
+        ;;
     *)
         echo "Unknown argument: $1"
         exit 1
@@ -121,6 +126,7 @@ esac
 
 export VSI_VISUAL_INPUT_MODE="$visual_input_mode"
 export VSI_ANSWER_MODE="$answer_mode"
+export VSI_RUN_NOTE="$run_note"
 requested_num_processes="$num_processes"
 requested_launcher="$launcher"
 
@@ -136,6 +142,10 @@ echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES (gpu_count=$gpu_count)"
 if [ "${#models[@]}" -eq 1 ] && [ "${models[0]}" = "all" ]; then
     IFS=',' read -r -a models <<<"$available_models"
 fi
+
+quote_arg() {
+    printf "%q" "$1"
+}
 
 for model in "${models[@]}"; do
     echo "Start evaluating $model..."
@@ -295,6 +305,12 @@ for model in "${models[@]}"; do
     if [ "$use_gen_kwargs" = true ]; then
         evaluate_script="$evaluate_script \
         --gen_kwargs $gen_kwargs"
+    fi
+
+    if [ -n "$run_note" ]; then
+        run_note_arg=$(quote_arg "$run_note")
+        evaluate_script="$evaluate_script \
+        --run_note $run_note_arg"
     fi
 
     evaluate_script="$evaluate_script \

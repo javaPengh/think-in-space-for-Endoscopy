@@ -37,6 +37,7 @@
 | 平台控制 fps 采样 | `--video_input_mode file --video_sample_fps F` | 仅 Qwen API 模型支持，上传本地视频文件，由 DashScope 按 fps 抽帧。 |
 | 盲测 | `--visual_input_mode none` | 不提供图片或视频，只把问题文本送给模型。 |
 | 自然输出 | `--answer_mode natural` | 允许模型自然语言解释，最后用 `Final answer: ...` 给可抽取答案。指标仍使用抽取后的受限答案计算。 |
+| 评估备注 | `--run_note "文本"` | 给本次评估记录添加自由文本备注，方便记录额外变量或实验条件。 |
 | 指定 CUDA 编号 | `--cuda_visible_devices 0,1` | 指定本次评估可见的 GPU 编号，会写入 `CUDA_VISIBLE_DEVICES`。 |
 
 ## 命令示例
@@ -95,6 +96,12 @@ bash evaluate_all_in_one.sh --model qwen3vl_8b --benchmark vsibench --num_proces
 bash evaluate_all_in_one.sh --model qwen3vl_8b --benchmark vsibench --num_processes 1 --limit 2 --answer_mode natural
 ```
 
+### 添加评估备注
+
+```bash
+bash evaluate_all_in_one.sh --model qwen3vl_8b --benchmark vsibench --num_processes 2 --num_frames 16 --run_note "prompt=v2 temperature=0 data=sampleA"
+```
+
 ### 评估多个模型
 
 ```bash
@@ -120,6 +127,8 @@ python tools/update_eval_dashboard.py logs/YYYYMMDD/vsibench/path/to/results.jso
 ```text
 docs/eval_dashboard.html
 ```
+
+评估记录表会保留全部历史记录，并显示 `备注` 列。图表仍按同一模型和同一采样策略只取最新记录；如果需要对比同模型同采样策略下的其它实验变量，可以在评估时用 `--run_note` 标注，然后直接在评估记录表里对比各指标。
 
 ## 自然输出和题目级对错矩阵
 
@@ -169,6 +178,18 @@ C:\Users\a2818\Desktop\QA\抽样测试.xlsx
 
 ```bash
 python tools/update_eval_dashboard.py --baseline_excel "C:\Users\a2818\Desktop\QA\抽样测试.xlsx"
+```
+
+基线会同时缓存到：
+
+```text
+docs/eval_baselines.json
+```
+
+远程服务器没有本地 Excel 时，dashboard 会自动读取这个 JSON 缓存继续显示基线。更新题库后，可以只重新生成基线缓存：
+
+```bash
+python tools/update_eval_dashboard.py --update_baseline_cache_only --baseline_excel "C:\Users\a2818\Desktop\QA\抽样测试.xlsx"
 ```
 
 或者在追加某个 `results.json` 时同时指定题库：
