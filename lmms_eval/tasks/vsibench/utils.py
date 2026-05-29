@@ -281,20 +281,21 @@ def _extract_numeric_prediction(pred):
 
 
 def vsibench_process_results(doc, results):
-    natural_prediction = results[0] if results else ""
+    raw_prediction = results[0] if results else ""
+    natural_answer_mode = _is_natural_answer_mode()
     doc['media_type'] = _doc_media_type(doc)
     doc['answer_type'] = _doc_answer_type(doc)
     if doc['answer_type'] == ANSWER_TYPE_MULTIPLE_CHOICE:
-        restricted_prediction = _extract_choice_prediction(natural_prediction, doc)
-        doc['natural_prediction'] = natural_prediction
+        restricted_prediction = _extract_choice_prediction(raw_prediction, doc) if natural_answer_mode else raw_prediction
+        doc['natural_prediction'] = raw_prediction if natural_answer_mode else ""
         doc['restricted_prediction'] = restricted_prediction
         doc['prediction'] = restricted_prediction
         for key, value in METRICS_FOR_MCA.items():
             doc[key] = eval(value)(doc['prediction'], doc['ground_truth'])
         doc["is_correct"] = bool(doc.get("accuracy", 0.0))
     elif doc['answer_type'] == ANSWER_TYPE_NUMERIC:
-        restricted_prediction = _extract_numeric_prediction(natural_prediction)
-        doc['natural_prediction'] = natural_prediction
+        restricted_prediction = _extract_numeric_prediction(raw_prediction) if natural_answer_mode else raw_prediction
+        doc['natural_prediction'] = raw_prediction if natural_answer_mode else ""
         doc['restricted_prediction'] = restricted_prediction
         doc['prediction'] = restricted_prediction if restricted_prediction is not None else ""
         for key, value in METRICS_FOR_NA.items():

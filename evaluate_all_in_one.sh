@@ -20,6 +20,7 @@ use_wandb_args=false
 video_sampling_strategy="uniform"
 video_sample_fps=""
 video_input_mode=""
+video_max_num=""
 visual_input_mode="visual"
 cuda_visible_devices="${CUDA_VISIBLE_DEVICES:-0}"
 answer_mode="restricted"
@@ -76,6 +77,10 @@ while [[ $# -gt 0 ]]; do
         ;;
     --video_input_mode)
         video_input_mode="$2"
+        shift 2
+        ;;
+    --video_max_num)
+        video_max_num="$2"
         shift 2
         ;;
     --visual_input_mode)
@@ -199,13 +204,13 @@ for model in "${models[@]}"; do
     "internvl3_5_2b")
         model_family="internvl3_5"
         model="internvl3_5_2b_${num_frames}f"
-        model_args="pretrained=~/.cache/modelscope/hub/models/OpenGVLab/InternVL3_5-2B,modality=video,max_frames_num=$num_frames,video_max_num=4"
+        model_args="pretrained=~/.cache/modelscope/hub/models/OpenGVLab/InternVL3_5-2B,modality=video,max_frames_num=$num_frames"
         ;;
     "internvl3_5_8b")
         model_family="internvl3_5"
         model="internvl3_5_8b_${num_frames}f"
         # 8B 模型依然可以在多卡数据并行（num_processes=4）下良好运行
-        model_args="pretrained=~/.cache/modelscope/hub/models/OpenGVLab/InternVL3_5-8B,modality=video,max_frames_num=$num_frames,video_max_num=4"
+        model_args="pretrained=~/.cache/modelscope/hub/models/OpenGVLab/InternVL3_5-8B,modality=video,max_frames_num=$num_frames"
         ;;
     "qwen3vl_8b")
         model_family="qwen3vl"
@@ -247,6 +252,17 @@ for model in "${models[@]}"; do
         model_args="$model_args,visual_input_mode=none"
         model="${model}_blind"
     else
+        if [ -n "$video_max_num" ]; then
+            case "$model_family" in
+            "internvl3_5")
+                model_args="$model_args,video_max_num=$video_max_num"
+                model="${model}_vmax${video_max_num}"
+                ;;
+            *)
+                echo "Warning: --video_max_num is only supported by InternVL3.5 adapters; ignoring for $model_family"
+                ;;
+            esac
+        fi
         # Add sampling strategy into model_args
         if [ -n "$video_sample_fps" ]; then
             model_args="$model_args,video_sampling_strategy=fps,video_sample_fps=$video_sample_fps"

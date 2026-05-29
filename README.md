@@ -4,7 +4,7 @@
 
 评估结果和 token 消耗会在评估结束后写入 `logs/`，并通过 `tools/update_eval_dashboard.py` 汇总到 `docs/eval_dashboard.html`。
 
-如果开启自然输出模式，评估样本日志还会生成题目级对错矩阵，输出到 `docs/eval_question_matrix.html`。
+VSI-Bench 评估样本日志还会生成题目级对错矩阵，输出到 `docs/eval_question_matrix.html`。
 
 ## 支持模型
 
@@ -141,12 +141,12 @@ Final answer: A
 Final answer: 12.3
 ```
 
-评估时会保存两份答案：
+评估时会保存两份答案，restricted 和 natural 模式的列含义不同：
 
 | 字段 | 含义 |
 | --- | --- |
-| `natural_prediction` | 模型原始完整输出，用于查看模型自然回答。 |
-| `restricted_prediction` | 从自然输出中抽取出的选项字母或数字。 |
+| `natural_prediction` | natural 模式保存模型原始完整输出；restricted 模式为空。 |
+| `restricted_prediction` | natural 模式保存抽取出的选项字母或数字；restricted 模式保存模型直接回答。 |
 | `prediction` | 兼容旧流程，仍然等于 `restricted_prediction`。 |
 
 现有 aggregate 指标只使用 `restricted_prediction` 计算，不直接使用自然输出计算指标。

@@ -231,6 +231,8 @@ class InternVL3_5(lmms):
         self.modality = modality
         self.max_frames_num = max_frames_num
         self.video_max_num = int(video_max_num)
+        if self.video_max_num < 1:
+            raise ValueError(f"video_max_num must be >= 1, got {video_max_num}.")
         self.sample_frames_version = None
         self.video_sampling_strategy = video_sampling_strategy
         self.keyframe_mapping = {}
