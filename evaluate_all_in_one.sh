@@ -199,13 +199,13 @@ for model in "${models[@]}"; do
     "internvl3_5_2b")
         model_family="internvl3_5"
         model="internvl3_5_2b_${num_frames}f"
-        model_args="pretrained=~/.cache/modelscope/hub/models/OpenGVLab/InternVL3_5-2B,modality=video,max_frames_num=$num_frames"
+        model_args="pretrained=~/.cache/modelscope/hub/models/OpenGVLab/InternVL3_5-2B,modality=video,max_frames_num=$num_frames,video_max_num=4"
         ;;
     "internvl3_5_8b")
         model_family="internvl3_5"
         model="internvl3_5_8b_${num_frames}f"
         # 8B 模型依然可以在多卡数据并行（num_processes=4）下良好运行
-        model_args="pretrained=~/.cache/modelscope/hub/models/OpenGVLab/InternVL3_5-8B,modality=video,max_frames_num=$num_frames"
+        model_args="pretrained=~/.cache/modelscope/hub/models/OpenGVLab/InternVL3_5-8B,modality=video,max_frames_num=$num_frames,video_max_num=4"
         ;;
     "qwen3vl_8b")
         model_family="qwen3vl"

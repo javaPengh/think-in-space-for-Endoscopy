@@ -219,6 +219,7 @@ class InternVL3_5(lmms):
         device_map: str = "cuda:0",
         batch_size: str = "1",
         max_frames_num: int = 32,
+        video_max_num: int = 1,
         video_sampling_strategy: str = "uniform",
         keyframe_mapping_path: str = "data/keyframe_mapping.json",
         visual_input_mode: str = "visual",
@@ -229,6 +230,7 @@ class InternVL3_5(lmms):
         self.path = pretrained
         self.modality = modality
         self.max_frames_num = max_frames_num
+        self.video_max_num = int(video_max_num)
         self.sample_frames_version = None
         self.video_sampling_strategy = video_sampling_strategy
         self.keyframe_mapping = {}
@@ -491,7 +493,7 @@ class InternVL3_5(lmms):
                     pixel_values, num_patches_list = load_video(
                         video_path,
                         num_segments=self.max_frames_num,
-                        max_num=1,
+                        max_num=self.video_max_num,
                         model_name=extracted_model_name,
                         version_dir=self.sample_frames_version,
                         video_sampling_strategy=self.video_sampling_strategy,
