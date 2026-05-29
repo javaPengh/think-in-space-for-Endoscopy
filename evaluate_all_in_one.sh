@@ -22,6 +22,10 @@ video_sample_fps=""
 video_input_mode=""
 visual_input_mode="visual"
 cuda_visible_devices="${CUDA_VISIBLE_DEVICES:-0}"
+answer_mode="restricted"
+gen_kwargs=""
+use_gen_kwargs=false
+natural_gen_kwargs="max_new_tokens=256,temperature=0,top_p=1.0,num_beams=1,do_sample=false"
 
 available_models="gemini_3_1_pro,gemini_3_1_flash_lite,gpt5_4,llava_one_vision_1_5_8b,llava_next_video_7b_qwen2,internvl3_5_2b,internvl3_5_8b,qwen3vl_8b,qwen3vl_32b,qwen2_5vl_72b_api,qwen3vl_235b_a22b_api,internvideo2_5_chat_8b"
 IFS=',' read -r -a models <<<"$available_models"
@@ -81,6 +85,15 @@ while [[ $# -gt 0 ]]; do
         cuda_visible_devices="$2"
         shift 2
         ;;
+    --answer_mode)
+        answer_mode="$2"
+        shift 2
+        ;;
+    --gen_kwargs)
+        gen_kwargs="$2"
+        use_gen_kwargs=true
+        shift 2
+        ;;
     *)
         echo "Unknown argument: $1"
         exit 1
@@ -97,7 +110,17 @@ case "$visual_input_mode" in
     ;;
 esac
 
+case "$answer_mode" in
+"restricted"|"natural")
+    ;;
+*)
+    echo "Unsupported --answer_mode: $answer_mode (expected: restricted or natural)"
+    exit 1
+    ;;
+esac
+
 export VSI_VISUAL_INPUT_MODE="$visual_input_mode"
+export VSI_ANSWER_MODE="$answer_mode"
 requested_num_processes="$num_processes"
 requested_launcher="$launcher"
 
@@ -235,6 +258,14 @@ for model in "${models[@]}"; do
         fi
     fi
 
+    if [ "$answer_mode" = "natural" ]; then
+        model="${model}_natural"
+        if [ "$use_gen_kwargs" = false ]; then
+            gen_kwargs="$natural_gen_kwargs"
+            use_gen_kwargs=true
+        fi
+    fi
+
     if [ "$launcher" = "python" ]; then
         export LMMS_EVAL_LAUNCHER="python"
         evaluate_script="python \
@@ -259,6 +290,11 @@ for model in "${models[@]}"; do
     if [ "$use_wandb_args" = true ]; then
         evaluate_script="$evaluate_script \
         --wandb_args $wandb_args"
+    fi
+
+    if [ "$use_gen_kwargs" = true ]; then
+        evaluate_script="$evaluate_script \
+        --gen_kwargs $gen_kwargs"
     fi
 
     evaluate_script="$evaluate_script \

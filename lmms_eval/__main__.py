@@ -564,6 +564,14 @@ def cli_evaluate_single(args: Union[argparse.Namespace, None] = None) -> None:
                     samples_dumped = json.dumps(data_to_dump, indent=4, default=_handle_non_serializable, ensure_ascii=False)
                     filename.open("w", encoding="utf-8").write(samples_dumped)
                     eval_logger.info(f"Saved samples to {filename}")
+                    if task_name == "vsibench":
+                        try:
+                            from tools.update_eval_question_matrix import update_question_matrix_from_sample_file
+
+                            matrix_paths = update_question_matrix_from_sample_file(filename)
+                            eval_logger.info(f"Updated question-level matrix: {matrix_paths['html_path']}")
+                        except Exception as error:
+                            eval_logger.warning(f"Failed to update question-level matrix: {error}")
 
         return results, samples
     return None, None

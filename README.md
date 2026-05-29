@@ -4,6 +4,8 @@
 
 评估结果和 token 消耗会在评估结束后写入 `logs/`，并通过 `tools/update_eval_dashboard.py` 汇总到 `docs/eval_dashboard.html`。
 
+如果开启自然输出模式，评估样本日志还会生成题目级对错矩阵，输出到 `docs/eval_question_matrix.html`。
+
 ## 支持模型
 
 当前 `evaluate_all_in_one.sh` 支持以下模型名：
@@ -34,6 +36,7 @@
 | 指定关键帧采样 | `--video_sampling_strategy specific` | 使用 `data/keyframe_mapping.json` 中的关键帧。 |
 | 平台控制 fps 采样 | `--video_input_mode file --video_sample_fps F` | 仅 Qwen API 模型支持，上传本地视频文件，由 DashScope 按 fps 抽帧。 |
 | 盲测 | `--visual_input_mode none` | 不提供图片或视频，只把问题文本送给模型。 |
+| 自然输出 | `--answer_mode natural` | 允许模型自然语言解释，最后用 `Final answer: ...` 给可抽取答案。指标仍使用抽取后的受限答案计算。 |
 | 指定 CUDA 编号 | `--cuda_visible_devices 0,1` | 指定本次评估可见的 GPU 编号，会写入 `CUDA_VISIBLE_DEVICES`。 |
 
 ## 命令示例
@@ -86,6 +89,12 @@ bash evaluate_all_in_one.sh --model qwen2_5vl_72b_api --benchmark vsibench --num
 bash evaluate_all_in_one.sh --model qwen3vl_8b --benchmark vsibench --num_processes 2 --visual_input_mode none
 ```
 
+### 自然输出并生成题目级对错矩阵
+
+```bash
+bash evaluate_all_in_one.sh --model qwen3vl_8b --benchmark vsibench --num_processes 1 --limit 2 --answer_mode natural
+```
+
 ### 评估多个模型
 
 ```bash
@@ -111,3 +120,76 @@ python tools/update_eval_dashboard.py logs/YYYYMMDD/vsibench/path/to/results.jso
 ```text
 docs/eval_dashboard.html
 ```
+
+## 自然输出和题目级对错矩阵
+
+默认 `--answer_mode restricted` 会保持原来的受限回答方式：选择题只输出选项，数值题只输出数字。
+
+使用 `--answer_mode natural` 时，VSI-Bench prompt 会允许模型解释或描述推理过程，但要求最后给一行可抽取答案：
+
+```text
+Final answer: A
+Final answer: 12.3
+```
+
+评估时会保存两份答案：
+
+| 字段 | 含义 |
+| --- | --- |
+| `natural_prediction` | 模型原始完整输出，用于查看模型自然回答。 |
+| `restricted_prediction` | 从自然输出中抽取出的选项字母或数字。 |
+| `prediction` | 兼容旧流程，仍然等于 `restricted_prediction`。 |
+
+现有 aggregate 指标只使用 `restricted_prediction` 计算，不直接使用自然输出计算指标。
+
+评估结束写出 `vsibench.json` 样本日志后，会自动生成：
+
+```text
+docs/eval_question_matrix.json
+docs/eval_question_matrix.html
+```
+
+对错矩阵每条记录包含模型名称、采样策略、题型、原题目、自然输出、受限输出、真实答案、选项内容、分数，以及选择题是否正确或数值题是否得分。
+
+如果需要从已有样本日志手动生成矩阵，可以执行：
+
+```bash
+python tools/update_eval_question_matrix.py logs/YYYYMMDD/vsibench/path/to/vsibench.json
+```
+
+## 水平基线
+
+Dashboard 支持从 Excel 题库生成水平基线，并叠加到 `指标对比` 图表中。默认会尝试读取：
+
+```text
+C:\Users\a2818\Desktop\QA\抽样测试.xlsx
+```
+
+如果默认路径存在，评估结束更新 dashboard 时会自动计算并写入基线。也可以手动指定 Excel 文件刷新 dashboard：
+
+```bash
+python tools/update_eval_dashboard.py --baseline_excel "C:\Users\a2818\Desktop\QA\抽样测试.xlsx"
+```
+
+或者在追加某个 `results.json` 时同时指定题库：
+
+```bash
+python tools/update_eval_dashboard.py logs/YYYYMMDD/vsibench/path/to/results.json --baseline_excel "C:\Users\a2818\Desktop\QA\抽样测试.xlsx"
+```
+
+### 基线含义
+
+选择题类别会生成两条基线：
+
+| 基线 | 含义 |
+| --- | --- |
+| 随机基线 | 每道题按选项数随机猜，分数是该类别内 `1 / 选项个数` 的平均，再乘以 100。若每题都是 4 个选项，就是 25 分。 |
+| 频率基线 | 统计该类别正确答案标签分布，永远猜出现最多的那个标签，能拿到的分数比例再乘以 100。 |
+
+数值题类别会生成一条基线：
+
+| 基线 | 含义 |
+| --- | --- |
+| 常数基线MRA | 取该类别全部真值的中位数作为固定预测值，对每道题都预测这个常数，再按 VSI-Bench 的 MRA 阈值规则计算平均分并乘以 100。 |
+
+这些基线不是模型结果，只是“地板线”：用来判断模型在某个题型上是否明显超过随机猜、答案分布偏置，或数值题的常数猜测策略。

@@ -1,4 +1,5 @@
 import os
+import re
 from pathlib import Path
 import yaml
 from loguru import logger as eval_logger
@@ -47,6 +48,9 @@ ANSWER_TYPE_ALIASES = {
     "number": ANSWER_TYPE_NUMERIC,
     "numerical": ANSWER_TYPE_NUMERIC,
 }
+
+FINAL_ANSWER_RE = re.compile(r"final\s*answer\s*[:：]\s*([^\n\r]+)", re.IGNORECASE)
+NUMBER_RE = re.compile(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)")
 
 
 hf_home = os.getenv("HF_HOME", "~/.cache/huggingface/")
@@ -112,6 +116,10 @@ def _is_blind_visual_input_mode():
     return str(os.getenv("VSI_VISUAL_INPUT_MODE", "visual")).strip().lower() == "none"
 
 
+def _is_natural_answer_mode():
+    return str(os.getenv("VSI_ANSWER_MODE", "restricted")).strip().lower() == "natural"
+
+
 def _metrics_for_answer_type(answer_type):
     if answer_type == ANSWER_TYPE_MULTIPLE_CHOICE:
         return METRICS_FOR_MCA
@@ -149,11 +157,17 @@ def vsibench_doc_to_text(doc, lmms_eval_specific_kwargs=None):
     
     answer_type = _doc_answer_type(doc)
     if answer_type == ANSWER_TYPE_NUMERIC:
-        post_prompt = lmms_eval_specific_kwargs.get("na_post_prompt", "") or "Please answer the question using a single word or phrase."
+        if _is_natural_answer_mode():
+            post_prompt = lmms_eval_specific_kwargs.get("na_natural_post_prompt", "") or "You may explain your reasoning briefly. End your response with a separate line in the exact format: Final answer: <number>"
+        else:
+            post_prompt = lmms_eval_specific_kwargs.get("na_post_prompt", "") or "Please answer the question using a single word or phrase."
         return "\n".join([part for part in [pre_prompt, question, post_prompt] if part])
     elif answer_type == ANSWER_TYPE_MULTIPLE_CHOICE:
         options = "Options:\n" + "\n".join(doc["options"])
-        post_prompt = lmms_eval_specific_kwargs.get("mca_post_prompt", "") or "Answer with the option's letter from the given choices directly."
+        if _is_natural_answer_mode():
+            post_prompt = lmms_eval_specific_kwargs.get("mca_natural_post_prompt", "") or "You may explain your reasoning briefly. End your response with a separate line in the exact format: Final answer: <option letter>"
+        else:
+            post_prompt = lmms_eval_specific_kwargs.get("mca_post_prompt", "") or "Answer with the option's letter from the given choices directly."
         return "\n".join([part for part in [pre_prompt, question, options, post_prompt] if part])
     else:
         raise ValueError(f"Unknown answer type: {answer_type}")
@@ -166,10 +180,10 @@ def process_docs(dataset: datasets.Dataset) -> datasets.Dataset:
     return dataset
 
 def fuzzy_matching(pred):
-    return pred.split(' ')[0].rstrip('.').strip()
+    return str(pred or "").split(' ')[0].rstrip('.').strip()
 
 def exact_match(pred, target):
-    return 1. if pred.lower() == target.lower() else 0.
+    return 1. if str(pred or "").lower() == str(target or "").lower() else 0.
 
 def abs_dist_norm(pred, target):
     return abs(pred - target) / target
@@ -192,20 +206,103 @@ def to_float(pred):
         pred = None
     return pred
 
+
+def _extract_final_answer_text(pred):
+    matches = FINAL_ANSWER_RE.findall(str(pred or ""))
+    if not matches:
+        return None
+    return matches[-1].strip().strip("`*_ ")
+
+
+def _option_label(index):
+    return chr(ord("A") + index)
+
+
+def _parse_option_map(doc):
+    option_map = {}
+    for index, option in enumerate(doc.get("options") or []):
+        option_text = str(option).strip()
+        match = re.match(r"^\s*([A-Za-z])\s*[\.\)、\):：-]\s*(.*)$", option_text)
+        if match:
+            label = match.group(1).upper()
+            text = match.group(2).strip()
+        else:
+            label = _option_label(index)
+            text = option_text
+        option_map[label] = text
+    return option_map
+
+
+def _normalize_option_text(text):
+    return re.sub(r"\s+", " ", str(text or "").strip().lower())
+
+
+def _extract_choice_prediction(pred, doc):
+    raw_text = str(pred or "").strip()
+    final_answer = _extract_final_answer_text(raw_text)
+    candidates = [candidate for candidate in [final_answer, raw_text] if candidate]
+    option_map = _parse_option_map(doc)
+    valid_labels = set(option_map.keys())
+
+    for candidate in candidates:
+        candidate_text = candidate.strip()
+        patterns = [
+            r"(?:answer|option|choice|答案|选项)\s*(?:is|为|是)?\s*[:：]?\s*[\(\[]?([A-Za-z])[\)\].、:：]?",
+            r"^[\s\(\[]*([A-Za-z])[\s\)\].、:：]*$",
+            r"[\(\[]([A-Za-z])[\)\]]",
+            r"(?:^|[\s:：])([A-Za-z])(?:[\s\.,;:：\)\]]|$)",
+        ]
+        for pattern in patterns:
+            for match in re.finditer(pattern, candidate_text, flags=re.IGNORECASE):
+                label = match.group(1).upper()
+                if label in valid_labels:
+                    return label
+
+    for candidate in candidates:
+        normalized_candidate = _normalize_option_text(candidate)
+        for label, option_text in option_map.items():
+            normalized_option = _normalize_option_text(option_text)
+            if normalized_option and len(normalized_option) > 1 and normalized_option in normalized_candidate:
+                return label
+
+    return fuzzy_matching(final_answer or raw_text).upper()
+
+
+def _extract_numeric_prediction(pred):
+    raw_text = str(pred or "").strip()
+    final_answer = _extract_final_answer_text(raw_text)
+    for candidate in [final_answer, raw_text]:
+        if not candidate:
+            continue
+        match = NUMBER_RE.search(candidate)
+        if match:
+            return match.group(0)
+    return None
+
+
 def vsibench_process_results(doc, results):
-    
-    doc['prediction'] = results[0]
+    natural_prediction = results[0] if results else ""
     doc['media_type'] = _doc_media_type(doc)
     doc['answer_type'] = _doc_answer_type(doc)
     if doc['answer_type'] == ANSWER_TYPE_MULTIPLE_CHOICE:
+        restricted_prediction = _extract_choice_prediction(natural_prediction, doc)
+        doc['natural_prediction'] = natural_prediction
+        doc['restricted_prediction'] = restricted_prediction
+        doc['prediction'] = restricted_prediction
         for key, value in METRICS_FOR_MCA.items():
-            doc[key] = eval(value)(fuzzy_matching(doc['prediction']), doc['ground_truth'])
+            doc[key] = eval(value)(doc['prediction'], doc['ground_truth'])
+        doc["is_correct"] = bool(doc.get("accuracy", 0.0))
     elif doc['answer_type'] == ANSWER_TYPE_NUMERIC:
+        restricted_prediction = _extract_numeric_prediction(natural_prediction)
+        doc['natural_prediction'] = natural_prediction
+        doc['restricted_prediction'] = restricted_prediction
+        doc['prediction'] = restricted_prediction if restricted_prediction is not None else ""
         for key, value in METRICS_FOR_NA.items():
             try:
-                doc[key] = eval(value)(to_float(fuzzy_matching(doc['prediction'])), to_float(doc['ground_truth']))
+                doc[key] = eval(value)(to_float(doc['prediction']), to_float(doc['ground_truth']))
             except TypeError:
                 doc[key] = WORST_CASE_FOR_METRICS[key]
+        doc["is_scored"] = any(float(doc.get(key, 0.0)) > 0.0 for key in METRICS_FOR_NA.keys())
     else:
         raise ValueError(f"Unknown answer type: {doc['answer_type']}")
 
