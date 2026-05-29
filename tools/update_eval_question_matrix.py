@@ -46,6 +46,7 @@ def build_question_rows(sample_data, sample_path):
     timestamp = sample_data.get("time") or _timestamp_from_path(sample_path) or datetime.now().isoformat(timespec="seconds")
     model = _resolve_model_name(args, model_args, sample_path)
     sampling_strategy = _sampling_label(_sampling_record(model_args))
+    run_note = args.get("run_note") or args.get("note") or ""
     sample_path_text = _relative_or_absolute(sample_path)
 
     rows = []
@@ -74,6 +75,7 @@ def build_question_rows(sample_data, sample_path):
                 "timestamp": timestamp,
                 "model": model,
                 "sampling_strategy": sampling_strategy,
+                "note": run_note,
                 "question_type": source_doc.get("question_type", ""),
                 "answer_type": answer_type or "",
                 "doc_id": doc_id,
@@ -172,7 +174,7 @@ def render_question_matrix_html(data):
     }}
     table {{
       width: 100%;
-      min-width: 1180px;
+      min-width: 1320px;
       border-collapse: collapse;
       table-layout: fixed;
     }}
@@ -243,6 +245,7 @@ def render_question_matrix_html(data):
           <col style="width: 112px">
           <col style="width: 145px">
           <col style="width: 100px">
+          <col style="width: 180px">
           <col style="width: 150px">
           <col style="width: 86px">
           <col style="width: 92px">
@@ -258,6 +261,7 @@ def render_question_matrix_html(data):
             <th>时间</th>
             <th>模型</th>
             <th>采样策略</th>
+            <th>备注</th>
             <th>题型</th>
             <th>答案类型</th>
             <th>是否正确/得分</th>
@@ -318,6 +322,7 @@ def _render_row(row):
   <td class="nowrap">{_cell(row.get('timestamp'))}</td>
   <td class="nowrap">{_cell(row.get('model'))}</td>
   <td class="nowrap">{_cell(row.get('sampling_strategy'))}</td>
+  <td class="text">{_cell(row.get('note'))}</td>
   <td>{_cell(row.get('question_type'))}</td>
   <td class="nowrap">{_cell(row.get('answer_type'))}</td>
   <td class="nowrap"><span class="status {status_class}">{html.escape(status_text)}</span></td>
