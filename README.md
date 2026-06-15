@@ -6,6 +6,28 @@
 
 VSI-Bench 评估样本日志还会生成题目级对错矩阵，输出到 `docs/eval_question_matrix.html`。
 
+## 数据目录
+
+VSI-Bench 的问答对由 `lmms_eval/tasks/vsibench/vsibench.yaml` 中的 `dataset_path` 指定，当前远程服务器配置为：
+
+```text
+/home/ph/.cache/huggingface/datasets/datasets--nyu-visionx--VSI-Bench
+```
+
+视觉数据由同一配置里的 `dataset_kwargs.cache_dir: vsibench` 和 `HF_HOME` 共同决定。默认 `HF_HOME=~/.cache/huggingface/` 时，当前远程服务器上的视觉数据根目录为：
+
+```text
+/home/ph/.cache/huggingface/vsibench
+```
+
+评估时如果样本里有 `media_path`，会相对这个视觉数据根目录解析；否则按下面的规则寻找视频：
+
+```text
+${HF_HOME}/vsibench/{dataset}/{scene_name}.mp4
+```
+
+README 后文提到的 `C:\Users\a2818\Desktop\QA\抽样测试.xlsx` 是用于计算 dashboard 水平基线的本地 Excel 题库，不是远程评估时直接读取的 VSI-Bench 问答数据集目录。
+
 ## 支持模型
 
 当前 `evaluate_all_in_one.sh` 支持以下模型名：

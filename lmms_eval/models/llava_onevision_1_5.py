@@ -24,6 +24,7 @@ from lmms_eval.api.model import lmms
 from lmms_eval.api.registry import register_model
 from lmms_eval.models.model_utils.blind_eval import is_blind_mode, normalize_visual_input_mode, strip_visual_context
 from lmms_eval.models.model_utils.load_video import read_video_pyav
+from lmms_eval.models.model_utils.question_id import get_question_key
 
 # Suppress warnings
 warnings.filterwarnings("ignore")
@@ -384,14 +385,7 @@ class Llava_OneVision_1_5(lmms):
             raise ValueError(f"Unsupported media_type for LLaVA-OneVision-1.5: {media_type}")
 
         try:
-            doc_data = self.task_dict[task][split][doc_id]
-            question_key = None
-            for possible_key in ["question_id", "id", "ID", "Question_ID", "questionId"]:
-                if possible_key in doc_data:
-                    question_key = str(doc_data[possible_key])
-                    break
-            if question_key is None:
-                question_key = str(doc_id)
+            question_key = get_question_key(self.task_dict[task][split][doc_id], doc_id)
 
             if self.video_decode_backend == "decord" or self.video_sampling_strategy in {"specific", "fps"}:
                 frames = self.load_video(media_paths, self.max_frames_num, question_key=question_key, task=task)

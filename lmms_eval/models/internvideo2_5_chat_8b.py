@@ -18,6 +18,7 @@ from lmms_eval.api.instance import Instance
 from lmms_eval.api.model import lmms
 from lmms_eval.api.registry import register_model
 from lmms_eval.models.model_utils.blind_eval import is_blind_mode, normalize_visual_input_mode, strip_visual_context
+from lmms_eval.models.model_utils.question_id import get_question_key
 from loguru import logger as eval_logger
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
@@ -523,14 +524,7 @@ class InternVideo2_5_Chat(lmms):
                     # 提取模型名称用于建立对应目录，例如从 "OpenGVLab/InternVL-3.5-2B" 中提取 "InternVL-3.5-2B"
                     extracted_model_name = self.path.split("/")[-1] if "/" in self.path else self.path
                     
-                    doc_data = self.task_dict[task][split][doc_id]
-                    question_key = None
-                    for possible_key in ["question_id", "id", "ID", "Question_ID", "questionId"]:
-                        if possible_key in doc_data:
-                            question_key = str(doc_data[possible_key])
-                            break
-                    if question_key is None:
-                        question_key = str(doc_id)
+                    question_key = get_question_key(self.task_dict[task][split][doc_id], doc_id)
                     
                     pixel_values, num_patches_list = load_video(
                         video_path,

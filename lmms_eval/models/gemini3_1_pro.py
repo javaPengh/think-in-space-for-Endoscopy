@@ -20,6 +20,7 @@ from lmms_eval.api.instance import Instance
 from lmms_eval.api.model import lmms
 from lmms_eval.api.registry import register_model
 from lmms_eval.models.model_utils.blind_eval import is_blind_mode, normalize_visual_input_mode, strip_visual_context
+from lmms_eval.models.model_utils.question_id import get_question_key
 from lmms_eval.models.model_utils.token_usage import TokenUsageTracker, extract_gemini_usage
 from loguru import logger as eval_logger
 
@@ -172,11 +173,7 @@ class Gemini3_1Pro(lmms):
         return self._image_to_inline_part(Image.fromarray(frame).convert("RGB"))
 
     def _get_question_key(self, doc_id, task, split):
-        doc_data = self.task_dict[task][split][doc_id]
-        for possible_key in ["question_id", "id", "ID", "Question_ID", "questionId"]:
-            if possible_key in doc_data:
-                return str(doc_data[possible_key])
-        return str(doc_id)
+        return get_question_key(self.task_dict[task][split][doc_id], doc_id)
 
     def _sample_video_frames(self, video_path, doc_id, task, split):
         vr = VideoReader(video_path, ctx=cpu(0))
