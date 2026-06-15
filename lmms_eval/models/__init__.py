@@ -29,6 +29,7 @@ AVAILABLE_MODELS = {
     "llava_hf": "LlavaHf",
     "llava_onevision": "Llava_OneVision",
     "llava_onevision_1_5": "Llava_OneVision_1_5",
+    "lingshu_32b": "Lingshu32B",
     "llava_sglang": "LlavaSglang",
     "llava_vid": "LlavaVid",
     "longva": "LongVA",

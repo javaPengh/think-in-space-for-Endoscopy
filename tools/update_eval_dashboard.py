@@ -15,7 +15,7 @@ DEFAULT_HTML_PATH = DOCS_DIR / "eval_dashboard.html"
 DEFAULT_BASELINE_CACHE_PATH = DOCS_DIR / "eval_baselines.json"
 DEFAULT_BASELINE_EXCEL_PATH = Path(r"C:\Users\a2818\Desktop\QA\抽样测试.xlsx")
 
-CHOICE_ANSWER_TYPES = {"mca", "mcq", "multiple_choice", "choice"}
+CHOICE_ANSWER_TYPES = {"mca", "mac", "mcq", "multiple_choice", "choice"}
 NUMERIC_ANSWER_TYPES = {"na", "numeric", "number", "numerical"}
 QUESTION_TYPE_METRIC_MAP = {
     "object_rel_direction_easy": "object_rel_direction_accuracy",
@@ -515,6 +515,11 @@ def render_dashboard_html(data):
     .primary-btn:hover {{ border-color: #9f1f14; background: #9f1f14; }}
     .hint {{ color: var(--muted); font-size: 12px; margin-top: 8px; }}
     .chart {{ height: 500px; width: 100%; display: block; }}
+    .series-legend {{ cursor: pointer; outline: none; }}
+    .series-legend line, .series-legend text {{ transition: opacity 120ms ease, stroke-opacity 120ms ease, fill-opacity 120ms ease; }}
+    .series-legend.is-hidden line {{ stroke-opacity: 0.25; }}
+    .series-legend.is-hidden text {{ fill-opacity: 0.45; text-decoration: line-through; }}
+    .series-legend:focus-visible text {{ font-weight: 700; }}
     table {{ width: max-content; min-width: 100%; border-collapse: collapse; font-size: 13px; }}
     th, td {{ border-bottom: 1px solid var(--line); padding: 9px 8px; text-align: left; vertical-align: top; white-space: nowrap; }}
     th {{ color: var(--muted); font-weight: 600; background: #fafafa; position: sticky; top: 0; }}
@@ -591,6 +596,8 @@ def render_dashboard_html(data):
     }};
     const token = (r, k) => r.token_usage ? r.token_usage[k] : null;
     const seriesLabel = r => `${{r.model || 'unknown'}} / ${{samplingLabel(r)}}`;
+    const seriesKey = r => `${{r.model || 'unknown'}}||${{samplingLabel(r)}}`;
+    const hiddenSeriesKeys = new Set();
     const palette = ['#2563eb', '#c2410c', '#0f9f6e', '#7c3aed', '#be123c', '#0e7490', '#a16207', '#4f46e5', '#15803d'];
     const baselines = (state.baselines && state.baselines.items) || {{}};
     const baselineStyles = {{
@@ -603,16 +610,21 @@ def render_dashboard_html(data):
       overall: '平均分',
       image_overall: '图像总体',
       video_overall: '视频数据平均分',
-      'object_abs_distance_MRA:.5:.95:.05': '绝对距离',
-      'object_counting_MRA:.5:.95:.05': '物体计数',
+      'counting_MRA:.5:.95:.05': '计数总体',
+      'counting(object)_MRA:.5:.95:.05': '物体计数',
+      'counting(action)_MRA:.5:.95:.05': '动作计数',
       object_rel_direction_accuracy: '相对方向',
-      object_rel_distance_accuracy: '相对距离',
-      'object_size_estimation_MRA:.5:.95:.05': '尺寸估计',
+      fold_rel_depth_accuracy: '相对深度',
       route_planning_accuracy: '路径规划',
-      obj_appearance_order_accuracy: '出现顺序'
+      temporal_accuracy: '时序总体',
+      'temporal(object)_accuracy': '物体时序',
+      'temporal(action)_accuracy': '动作时序',
+      polyp_size_estimation_overall: '息肉尺寸总体',
+      'polyp_size_estimation(ref)_MRA:.5:.95:.05': '息肉尺寸(有参考)',
+      'polyp_size_estimation(no_ref)_accuracy': '息肉尺寸(无参考)'
     }};
     const metricLabel = key => metricLabelMap[key] || key;
-    const preferredMetrics = ['overall', 'image_overall', 'video_overall', 'object_abs_distance_MRA:.5:.95:.05', 'object_counting_MRA:.5:.95:.05', 'object_rel_direction_accuracy', 'object_rel_distance_accuracy', 'object_size_estimation_MRA:.5:.95:.05', 'route_planning_accuracy', 'obj_appearance_order_accuracy'];
+    const preferredMetrics = ['overall', 'image_overall', 'video_overall', 'counting_MRA:.5:.95:.05', 'counting(object)_MRA:.5:.95:.05', 'counting(action)_MRA:.5:.95:.05', 'object_rel_direction_accuracy', 'fold_rel_depth_accuracy', 'route_planning_accuracy', 'temporal_accuracy', 'temporal(object)_accuracy', 'temporal(action)_accuracy', 'polyp_size_estimation_overall', 'polyp_size_estimation(ref)_MRA:.5:.95:.05', 'polyp_size_estimation(no_ref)_accuracy'];
     const preferredSamplingValue = values => values.includes('fps_1') ? 'fps_1' : (values[0] || '');
     const activeRuns = () => runs.filter(r => !deletedRunIds.has(r.run_id));
     const persistDeletedRunIds = () => {{
@@ -680,14 +692,19 @@ def render_dashboard_html(data):
       svg.innerHTML = '';
       const width = svg.clientWidth || 1100, height = svg.clientHeight || 500;
       const padLeft = 58, padRight = 28, padTop = 84, padBottom = 78;
-      const chartItems = latestPerModelSampling(items).slice(0, 12);
-      if (!chartItems.length) {{
+      const allChartItems = latestPerModelSampling(items).slice(0, 12).map((run, index) => ({{
+        run,
+        key: seriesKey(run),
+        color: palette[index % palette.length]
+      }}));
+      const visibleChartItems = allChartItems.filter(item => !hiddenSeriesKeys.has(item.key));
+      if (!allChartItems.length) {{
         svg.insertAdjacentHTML('beforeend', `<text x="${{width / 2}}" y="${{height / 2}}" text-anchor="middle" font-size="13" fill="#667085">暂无记录</text>`);
         return;
       }}
 
-      const metricSet = new Set(chartItems.flatMap(r => Object.keys(r.metrics || {{}})));
-      const metricKeys = [...preferredMetrics.filter(k => metricSet.has(k)), ...[...metricSet].filter(k => !preferredMetrics.includes(k)).sort()].slice(0, 12);
+      const metricSet = new Set(allChartItems.flatMap(item => Object.keys(item.run.metrics || {{}})));
+      const metricKeys = [...preferredMetrics.filter(k => metricSet.has(k)), ...[...metricSet].filter(k => !preferredMetrics.includes(k)).sort()].slice(0, 16);
       if (!metricKeys.length) {{
         svg.insertAdjacentHTML('beforeend', `<text x="${{width / 2}}" y="${{height / 2}}" text-anchor="middle" font-size="13" fill="#667085">暂无可展示指标</text>`);
         return;
@@ -695,7 +712,7 @@ def render_dashboard_html(data):
       const plotW = width - padLeft - padRight;
       const plotH = height - padTop - padBottom;
       const groupW = plotW / Math.max(1, metricKeys.length);
-      const barW = Math.max(5, Math.min(30, groupW / (chartItems.length + 1)));
+      const barW = visibleChartItems.length ? Math.max(5, Math.min(30, groupW / (visibleChartItems.length + 1))) : 0;
       const visibleBaselineKinds = [...new Set(metricKeys.flatMap(key => (baselines[key] || []).map(item => item.kind)))];
 
       [0, 20, 40, 60, 80, 100].forEach(score => {{
@@ -707,13 +724,18 @@ def render_dashboard_html(data):
       svg.insertAdjacentHTML('beforeend', `<line x1="${{padLeft}}" y1="${{height-padBottom}}" x2="${{width-padRight}}" y2="${{height-padBottom}}" stroke="#d7dce3"/>`);
       svg.insertAdjacentHTML('beforeend', `<line x1="${{padLeft}}" y1="${{padTop}}" x2="${{padLeft}}" y2="${{height-padBottom}}" stroke="#d7dce3"/>`);
 
-      chartItems.forEach((r, seriesIndex) => {{
-        const color = palette[seriesIndex % palette.length];
+      if (!visibleChartItems.length) {{
+        svg.insertAdjacentHTML('beforeend', `<text x="${{padLeft + plotW / 2}}" y="${{padTop + plotH / 2}}" text-anchor="middle" font-size="13" fill="#667085">已隐藏全部系列，点击图例恢复</text>`);
+      }}
+
+      visibleChartItems.forEach((item, seriesIndex) => {{
+        const r = item.run;
+        const color = item.color;
         metricKeys.forEach((key, metricIndex) => {{
           const rawVal = metric(r, key);
           const val = Math.max(0, Math.min(100, Number(rawVal || 0)));
           const h = plotH * val / 100;
-          const baseX = padLeft + metricIndex * groupW + (groupW - barW * chartItems.length) / 2;
+          const baseX = padLeft + metricIndex * groupW + (groupW - barW * visibleChartItems.length) / 2;
           const x = baseX + seriesIndex * barW;
           const y = height - padBottom - h;
           const safeBarW = Math.max(2, barW - 2);
@@ -757,12 +779,33 @@ def render_dashboard_html(data):
         svg.insertAdjacentHTML('beforeend', `<text x="${{padLeft + 32}}" y="${{y + 4}}" font-size="12" fill="#1f2937">${{html(style.label)}}</text>`);
       }});
 
-      chartItems.forEach((r, i) => {{
-        const color = palette[i % palette.length];
+      allChartItems.forEach((item, i) => {{
+        const r = item.run;
+        const key = item.key;
+        const color = item.color;
+        const hidden = hiddenSeriesKeys.has(key);
         const y = 22 + i * 20;
         const legendX = Math.max(padLeft, width - 360);
-        svg.insertAdjacentHTML('beforeend', `<line x1="${{legendX}}" y1="${{y}}" x2="${{legendX + 24}}" y2="${{y}}" stroke="${{color}}" stroke-width="6" />`);
-        svg.insertAdjacentHTML('beforeend', `<text x="${{legendX + 32}}" y="${{y + 4}}" font-size="12" fill="#1f2937">${{html(seriesLabel(r))}}  Token: ${{html(fmt(token(r, 'total_tokens')))}} </text>`);
+        const legendText = `${{seriesLabel(r)}}  Token: ${{fmt(token(r, 'total_tokens'))}}`;
+        const actionLabel = hidden ? '显示' : '隐藏';
+        const a11yLabel = `${{actionLabel}} ${{seriesLabel(r)}}`;
+        svg.insertAdjacentHTML('beforeend', `<g class="series-legend${{hidden ? ' is-hidden' : ''}}" data-series-key="${{html(key)}}" role="button" tabindex="0" aria-pressed="${{hidden ? 'false' : 'true'}}" aria-label="${{html(a11yLabel)}}"><title>${{html(a11yLabel)}}</title><line x1="${{legendX}}" y1="${{y}}" x2="${{legendX + 24}}" y2="${{y}}" stroke="${{color}}" stroke-width="6" /><text x="${{legendX + 32}}" y="${{y + 4}}" font-size="12" fill="#1f2937">${{html(legendText)}}</text></g>`);
+      }});
+
+      svg.querySelectorAll('.series-legend').forEach(legend => {{
+        const toggleSeries = () => {{
+          const key = legend.getAttribute('data-series-key');
+          if (!key) return;
+          if (hiddenSeriesKeys.has(key)) hiddenSeriesKeys.delete(key);
+          else hiddenSeriesKeys.add(key);
+          renderBarChart(svgId, items);
+        }};
+        legend.addEventListener('click', toggleSeries);
+        legend.addEventListener('keydown', event => {{
+          if (event.key !== 'Enter' && event.key !== ' ') return;
+          event.preventDefault();
+          toggleSeries();
+        }});
       }});
     }}
 
@@ -770,7 +813,7 @@ def render_dashboard_html(data):
       const metricKeys = [...new Set(items.flatMap(r => Object.keys(r.metrics || {{}})))].filter(k => !['tabulated_keys','tabulated_results'].includes(k));
       const preferred = preferredMetrics;
       const keys = [...preferred.filter(k => metricKeys.includes(k)), ...metricKeys.filter(k => !preferred.includes(k)).sort()];
-      const visibleMetricKeys = keys.slice(0, 10);
+      const visibleMetricKeys = keys.slice(0, 16);
       const head = ['时间', '模型', '采样', '备注', 'Token'];
       const header = head.map(h => `<th>${{h}}</th>`).join('') + visibleMetricKeys.map(k => `<th title="${{html(k)}}">${{html(metricLabel(k))}}</th>`).join('') + '<th>操作</th>';
       const rows = items.map(r => `<tr>

@@ -12,12 +12,14 @@ from accelerate import Accelerator, DistributedType
 from accelerate.state import AcceleratorState
 from accelerate.utils import InitProcessGroupKwargs
 from tqdm import tqdm
-from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
+import transformers
+from transformers import AutoProcessor
 
 from lmms_eval.api.instance import Instance
 from lmms_eval.api.model import lmms
 from lmms_eval.api.registry import register_model
 from lmms_eval.models.model_utils.blind_eval import is_blind_mode, normalize_visual_input_mode, strip_visual_context
+from lmms_eval.models.model_utils.question_id import get_question_key
 from loguru import logger as eval_logger
 
 DEFAULT_GEN_KWARGS = dict(
@@ -31,9 +33,15 @@ VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
 
 @register_model("qwen3vl")
 class Qwen3VL(lmms):
+    MODEL_CLASS_NAME = "Qwen3VLForConditionalGeneration"
+    DEFAULT_PRETRAINED = "Qwen/Qwen3-VL-8B-Instruct"
+    MODEL_DISPLAY_NAME = "Qwen3VL"
+    TOKEN_USAGE_MODEL_NAME = "qwen3vl"
+    TOKEN_USAGE_FILENAME = "qwen3vl_token_usage.jsonl"
+
     def __init__(
         self,
-        pretrained: str = "Qwen/Qwen3-VL-8B-Instruct",
+        pretrained: str = None,
         modality: str = "video",
         device: str = "cuda:0",
         device_map: str = "cuda:0",
@@ -58,7 +66,7 @@ class Qwen3VL(lmms):
             self.video_sampling_strategy = "fps"
         if not is_blind_mode(self.visual_input_mode):
             if self.video_sampling_strategy not in {"uniform", "specific", "fps"}:
-                raise ValueError(f"Unsupported video_sampling_strategy for Qwen3VL: {self.video_sampling_strategy}")
+                raise ValueError(f"Unsupported video_sampling_strategy for {self.MODEL_DISPLAY_NAME}: {self.video_sampling_strategy}")
             if self.video_sampling_strategy == "fps" and (self.video_sample_fps is None or self.video_sample_fps <= 0):
                 raise ValueError("video_sample_fps must be a positive number when video_sampling_strategy='fps'.")
 
@@ -70,14 +78,15 @@ class Qwen3VL(lmms):
             with open(keyframe_mapping_path, "r", encoding="utf-8") as f:
                 self.keyframe_mapping = json.load(f)
 
-        self.path = pretrained
+        self.path = pretrained or self.DEFAULT_PRETRAINED
         self.max_pixels = int(max_pixels) if max_pixels is not None else None
+        model_class = self._resolve_model_class()
 
         # Load model
         if device_map == "auto":
-            self._model = Qwen3VLForConditionalGeneration.from_pretrained(self.path, torch_dtype=torch.bfloat16, attn_implementation="flash_attention_2", low_cpu_mem_usage=True, trust_remote_code=True, device_map=device_map).eval()
+            self._model = model_class.from_pretrained(self.path, torch_dtype=torch.bfloat16, attn_implementation="flash_attention_2", low_cpu_mem_usage=True, trust_remote_code=True, device_map=device_map).eval()
         else:
-            self._model = Qwen3VLForConditionalGeneration.from_pretrained(self.path, torch_dtype=torch.bfloat16, attn_implementation="flash_attention_2", low_cpu_mem_usage=True, trust_remote_code=True).eval().cuda()
+            self._model = model_class.from_pretrained(self.path, torch_dtype=torch.bfloat16, attn_implementation="flash_attention_2", low_cpu_mem_usage=True, trust_remote_code=True).eval().cuda()
 
         processor_kwargs = {"trust_remote_code": True}
         if self.max_pixels is not None:
@@ -85,7 +94,7 @@ class Qwen3VL(lmms):
         self._processor = AutoProcessor.from_pretrained(self.path, **processor_kwargs)
 
         batch_size = int(batch_size)
-        assert batch_size == 1, f"Batch size should be 1 for Qwen3VL, but got {batch_size}."
+        assert batch_size == 1, f"Batch size should be 1 for {self.MODEL_DISPLAY_NAME}, but got {batch_size}."
         self.batch_size_per_gpu = batch_size
 
         # Accelerator setup
@@ -133,7 +142,7 @@ class Qwen3VL(lmms):
 
         self.modality = modality
         self.sample_frames_version = None
-        self.token_usage_path = str(Path(__file__).resolve().parents[2] / "docs" / "qwen3vl_token_usage.jsonl")
+        self.token_usage_path = str(Path(__file__).resolve().parents[2] / "docs" / self.TOKEN_USAGE_FILENAME)
         self._last_aggregated_token_usage = None
         self._reset_token_usage()
 
@@ -163,6 +172,16 @@ class Qwen3VL(lmms):
     @property
     def world_size(self):
         return self._world_size
+
+    def _resolve_model_class(self):
+        model_class = getattr(transformers, self.MODEL_CLASS_NAME, None)
+        if model_class is None:
+            raise ImportError(
+                f"{self.MODEL_DISPLAY_NAME} requires a Transformers version that provides "
+                f"{self.MODEL_CLASS_NAME}. Install or switch to a compatible Transformers release "
+                f"before using this model adapter."
+            )
+        return model_class
 
     def flatten(self, input):
         new_list = []
@@ -314,7 +333,7 @@ class Qwen3VL(lmms):
         os.makedirs(os.path.dirname(self.token_usage_path), exist_ok=True)
         summary = {
             "timestamp": datetime.now().isoformat(timespec="seconds"),
-            "model": "qwen3vl",
+            "model": self.TOKEN_USAGE_MODEL_NAME,
             "pretrained": self.path,
             "world_size": self.world_size,
             "max_frames_num": self.max_frames_num,
@@ -328,7 +347,7 @@ class Qwen3VL(lmms):
         }
         with open(self.token_usage_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(summary, ensure_ascii=False) + "\n")
-        eval_logger.info(f"Qwen3VL token usage saved to {self.token_usage_path}: {aggregated_usage}")
+        eval_logger.info(f"{self.MODEL_DISPLAY_NAME} token usage saved to {self.token_usage_path}: {aggregated_usage}")
 
     def get_token_usage_summary(self):
         return self._last_aggregated_token_usage
@@ -345,11 +364,7 @@ class Qwen3VL(lmms):
         return f"{self.max_frames_num}f"
 
     def _get_question_key(self, doc_id, task, split):
-        doc_data = self.task_dict[task][split][doc_id]
-        for possible_key in ["question_id", "id", "ID", "Question_ID", "questionId"]:
-            if possible_key in doc_data:
-                return str(doc_data[possible_key])
-        return str(doc_id)
+        return get_question_key(self.task_dict[task][split][doc_id], doc_id)
 
     def _sample_frame_indices(self, vr, total_frames, doc_id, task, split):
         import numpy as np

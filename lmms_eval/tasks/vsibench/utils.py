@@ -15,31 +15,97 @@ VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
 
 MCA_QUESTION_TYPES = [
     "object_rel_direction_easy",
-    # "object_rel_direction_medium",
-    # "object_rel_direction_hard",
-    "object_rel_distance",
+    "object_rel_direction_medium",
+    "object_rel_direction_hard",
+    "fold_rel_depth",
     "route_planning",
-    "obj_appearance_order",
+    "temporal(object)",
+    "temporal(action)",
+    "polyp_size_estimation(no_ref)",
 ]
 NA_QUESTION_TYPES = [
-    "object_abs_distance",
-    "object_counting",
-    "object_size_estimation",
-    # "room_size_estimation",
+    "counting(object)",
+    "counting(action)",
+    "polyp_size_estimation(ref)",
 ]
 
+ACCURACY_METRIC = "accuracy"
+MRA_METRIC = "MRA:.5:.95:.05"
+
 METRICS_FOR_MCA = {
-    "accuracy": "exact_match",
+    ACCURACY_METRIC: "exact_match",
 }
 
 METRICS_FOR_NA = {
-    "MRA:.5:.95:.05": "partial(mean_relative_accuracy, start=.5, end=.95, interval=.05)",
+    MRA_METRIC: "partial(mean_relative_accuracy, start=.5, end=.95, interval=.05)",
 }
+
+COMPOSITE_QUESTION_TYPES = OrderedDict(
+    [
+        (
+            "object_rel_direction",
+            {
+                "members": ["object_rel_direction_easy", "object_rel_direction_medium", "object_rel_direction_hard"],
+                "metric_key": f"object_rel_direction_{ACCURACY_METRIC}",
+                "include_members": False,
+            },
+        ),
+        (
+            "counting",
+            {
+                "members": ["counting(object)", "counting(action)"],
+                "metric_key": f"counting_{MRA_METRIC}",
+                "include_members": True,
+            },
+        ),
+        (
+            "temporal",
+            {
+                "members": ["temporal(object)", "temporal(action)"],
+                "metric_key": f"temporal_{ACCURACY_METRIC}",
+                "include_members": True,
+            },
+        ),
+        (
+            "polyp_size_estimation",
+            {
+                "members": ["polyp_size_estimation(ref)", "polyp_size_estimation(no_ref)"],
+                "metric_key": "polyp_size_estimation_overall",
+                "include_members": True,
+            },
+        ),
+    ]
+)
+
+TOP_LEVEL_RESULT_KEYS = [
+    f"counting_{MRA_METRIC}",
+    f"object_rel_direction_{ACCURACY_METRIC}",
+    f"fold_rel_depth_{ACCURACY_METRIC}",
+    f"route_planning_{ACCURACY_METRIC}",
+    f"temporal_{ACCURACY_METRIC}",
+    "polyp_size_estimation_overall",
+]
+
+AGGREGATED_RESULT_KEYS = [
+    f"counting_{MRA_METRIC}",
+    f"counting(object)_{MRA_METRIC}",
+    f"counting(action)_{MRA_METRIC}",
+    f"object_rel_direction_{ACCURACY_METRIC}",
+    f"fold_rel_depth_{ACCURACY_METRIC}",
+    f"route_planning_{ACCURACY_METRIC}",
+    f"temporal_{ACCURACY_METRIC}",
+    f"temporal(object)_{ACCURACY_METRIC}",
+    f"temporal(action)_{ACCURACY_METRIC}",
+    "polyp_size_estimation_overall",
+    f"polyp_size_estimation(ref)_{MRA_METRIC}",
+    f"polyp_size_estimation(no_ref)_{ACCURACY_METRIC}",
+]
 
 ANSWER_TYPE_MULTIPLE_CHOICE = "multiple_choice"
 ANSWER_TYPE_NUMERIC = "numeric"
 ANSWER_TYPE_ALIASES = {
     "mca": ANSWER_TYPE_MULTIPLE_CHOICE,
+    "mac": ANSWER_TYPE_MULTIPLE_CHOICE,
     "mcq": ANSWER_TYPE_MULTIPLE_CHOICE,
     "multiple_choice": ANSWER_TYPE_MULTIPLE_CHOICE,
     "choice": ANSWER_TYPE_MULTIPLE_CHOICE,
@@ -64,9 +130,18 @@ with open(Path(__file__).parent / "vsibench.yaml", "r") as f:
 cache_name = yaml.safe_load("".join(safe_data))["dataset_kwargs"]["cache_dir"]
 
 
+def _is_missing_value(value):
+    if value is None:
+        return True
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
+
+
 def _doc_value(doc, key, default=None):
     value = doc[key] if key in doc else default
-    return default if value is None else value
+    return default if _is_missing_value(value) else value
 
 
 def _normalize_media_type(media_type, media_path):
@@ -186,7 +261,11 @@ def exact_match(pred, target):
     return 1. if str(pred or "").lower() == str(target or "").lower() else 0.
 
 def abs_dist_norm(pred, target):
-    return abs(pred - target) / target
+    if pred is None or target is None:
+        return float("inf")
+    if target == 0:
+        return 0.0 if pred == 0 else float("inf")
+    return abs(pred - target) / abs(target)
 
 def mean_relative_accuracy(pred, target, start, end, interval):
     num_pts = (end - start) / interval + 2
@@ -195,8 +274,8 @@ def mean_relative_accuracy(pred, target, start, end, interval):
     return accuracy.mean()
 
 WORST_CASE_FOR_METRICS = {
-    "accuracy": 0.,
-    "MRA:.5:.95:.05": 0.,
+    ACCURACY_METRIC: 0.,
+    MRA_METRIC: 0.,
 }
 
 def to_float(pred):
@@ -309,83 +388,124 @@ def vsibench_process_results(doc, results):
 
     return {"vsibench_score": doc}
 
-def vsibench_aggregate_results(results):
-    results = pd.DataFrame(results)
 
+def _ensure_answer_type_column(results):
+    results = results.copy()
+    results["answer_type"] = results.apply(_doc_answer_type, axis=1)
+    return results
+
+
+def _primary_metric_for_answer_type(answer_type):
+    return next(iter(_metrics_for_answer_type(answer_type).keys()))
+
+
+def _result_key_for_question_type(question_type, answer_type, answer_type_count):
+    metric = _primary_metric_for_answer_type(answer_type)
+    if answer_type_count > 1:
+        return f"{question_type}_{answer_type}_{metric}"
+    return f"{question_type}_{metric}"
+
+
+def _remove_question_type_outputs(output, question_type):
+    prefix = f"{question_type}_"
+    for key in list(output.keys()):
+        if key.startswith(prefix):
+            output.pop(key)
+
+
+def _mean_row_score(rows):
+    scores = []
+    for _, row in rows.iterrows():
+        answer_type = row.get("answer_type") or _doc_answer_type(row)
+        metric = _primary_metric_for_answer_type(answer_type)
+        if metric not in row or pd.isna(row[metric]):
+            continue
+        scores.append(float(row[metric]))
+    if not scores:
+        return None
+    return sum(scores) / len(scores)
+
+
+def _is_composite_member_result_key(key):
+    for config in COMPOSITE_QUESTION_TYPES.values():
+        for member in config["members"]:
+            if key.startswith(f"{member}_"):
+                return True
+    return False
+
+
+def _overall_keys_for_outputs(output):
+    overall_keys = [key for key in TOP_LEVEL_RESULT_KEYS if key in output]
+    seen = set(overall_keys)
+    for key in output.keys():
+        if key in seen or _is_composite_member_result_key(key):
+            continue
+        overall_keys.append(key)
+        seen.add(key)
+    return overall_keys
+
+
+def _build_metric_outputs(results):
+    results = _ensure_answer_type_column(results)
     output = {}
 
-    for question_type, question_type_indexes in results.groupby('question_type').groups.items():
-        per_question_type = results.iloc[question_type_indexes]
-        if "answer_type" not in per_question_type.columns:
-            per_question_type = per_question_type.copy()
-            per_question_type["answer_type"] = per_question_type.apply(_doc_answer_type, axis=1)
-
+    for question_type, per_question_type in results.groupby("question_type").groups.items():
+        per_question_type = results.loc[per_question_type]
+        answer_type_count = len(per_question_type["answer_type"].dropna().unique())
         for answer_type, answer_type_indexes in per_question_type.groupby("answer_type").groups.items():
             per_answer_type = per_question_type.loc[answer_type_indexes]
             metrics = _metrics_for_answer_type(answer_type)
             for metric in metrics.keys():
-                if len(per_question_type["answer_type"].unique()) > 1:
-                    output[f"{question_type}_{answer_type}_{metric}"] = per_answer_type[metric].mean()
-                else:
-                    output[f"{question_type}_{metric}"] = per_answer_type[metric].mean()
+                if metric in per_answer_type:
+                    output[_result_key_for_question_type(question_type, answer_type, answer_type_count)] = per_answer_type[metric].mean()
 
-    direction_keys = [
-        "object_rel_direction_easy_accuracy",
-        "object_rel_direction_medium_accuracy",
-        "object_rel_direction_hard_accuracy",
-    ]
-    direction_scores = [output.pop(key) for key in direction_keys if key in output]
-    if direction_scores:
-        output["object_rel_direction_accuracy"] = sum(direction_scores) / len(direction_scores)
+    for config in COMPOSITE_QUESTION_TYPES.values():
+        per_composite = results[results["question_type"].isin(config["members"])]
+        if len(per_composite) == 0:
+            continue
+        score = _mean_row_score(per_composite)
+        if score is not None:
+            output[config["metric_key"]] = score
+        if not config.get("include_members", True):
+            for member in config["members"]:
+                _remove_question_type_outputs(output, member)
 
-    output['overall'] = sum([_ for _ in output.values()]) / len(output)
+    overall_keys = _overall_keys_for_outputs(output)
+    if overall_keys:
+        output["overall"] = sum(float(output[key]) for key in overall_keys) / len(overall_keys)
+    return output
+
+
+def _score_to_percent(score):
+    return float(score) * 100.
+
+
+def vsibench_aggregate_results(results):
+    results = pd.DataFrame(results)
+    output = _build_metric_outputs(results)
     eval_logger.info(f"Evaluation results: {output}")
 
     aggregated_results = OrderedDict()
-    aggregated_results["overall"] = output["overall"].item() * 100.
+    if "overall" in output:
+        aggregated_results["overall"] = _score_to_percent(output["overall"])
 
     if "media_type" in results.columns:
-        metric_columns = [metric for metric in [*METRICS_FOR_MCA.keys(), *METRICS_FOR_NA.keys()] if metric in results.columns]
         for media_type in ["image", "video"]:
             per_media = results[results["media_type"] == media_type]
-            if len(per_media) == 0 or len(metric_columns) == 0:
+            if len(per_media) == 0:
                 continue
-            per_media_scores = []
-            for question_type, question_type_indexes in per_media.groupby("question_type").groups.items():
-                per_question_type = per_media.loc[question_type_indexes]
-                if "answer_type" not in per_question_type.columns:
-                    per_question_type = per_question_type.copy()
-                    per_question_type["answer_type"] = per_question_type.apply(_doc_answer_type, axis=1)
-                for answer_type, answer_type_indexes in per_question_type.groupby("answer_type").groups.items():
-                    per_answer_type = per_question_type.loc[answer_type_indexes]
-                    metrics = _metrics_for_answer_type(answer_type)
-                    for metric in metrics.keys():
-                        if metric in per_answer_type:
-                            per_media_scores.append(per_answer_type[metric].mean())
-            if per_media_scores:
-                aggregated_results[f"{media_type}_overall"] = (sum(per_media_scores) / len(per_media_scores)).item() * 100.
-    
-    for question_type in [
-        "object_counting",
-        "object_abs_distance",
-        "object_size_estimation",
-        # "room_size_estimation",
-        "object_rel_distance",
-        "object_rel_direction",
-        "route_planning",
-        "obj_appearance_order",
-    ]:
-        for metric in [
-            "accuracy",
-            "MRA:.5:.95:.05",
-        ]:
-            key = f"{question_type}_{metric}"
-            if key in output:
-                aggregated_results[key] = output[key].item() * 100.
-            for answer_type in [ANSWER_TYPE_MULTIPLE_CHOICE, ANSWER_TYPE_NUMERIC]:
-                typed_key = f"{question_type}_{answer_type}_{metric}"
-                if typed_key in output:
-                    aggregated_results[typed_key] = output[typed_key].item() * 100.
+            per_media_output = _build_metric_outputs(per_media)
+            if "overall" in per_media_output:
+                aggregated_results[f"{media_type}_overall"] = _score_to_percent(per_media_output["overall"])
+
+    for key in AGGREGATED_RESULT_KEYS:
+        if key in output:
+            aggregated_results[key] = _score_to_percent(output[key])
+
+    for key, value in output.items():
+        if key == "overall" or key in aggregated_results:
+            continue
+        aggregated_results[key] = _score_to_percent(value)
 
     tabulated_keys = ", ".join([_ for _ in aggregated_results.keys()])
     tabulated_results = ", ".join([f"{_:.3f}" for _ in aggregated_results.values()])

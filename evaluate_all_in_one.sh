@@ -29,7 +29,7 @@ use_gen_kwargs=false
 natural_gen_kwargs="max_new_tokens=256,temperature=0,top_p=1.0,num_beams=1,do_sample=false"
 run_note=""
 
-available_models="gemini_3_1_pro,gemini_3_1_flash_lite,gpt5_4,llava_one_vision_1_5_8b,llava_next_video_7b_qwen2,internvl3_5_2b,internvl3_5_8b,qwen3vl_8b,qwen3vl_32b,qwen2_5vl_72b_api,qwen3vl_235b_a22b_api,internvideo2_5_chat_8b"
+available_models="gemini_3_1_pro,gemini_3_1_flash_lite,gpt5_4,llava_one_vision_1_5_8b,llava_next_video_7b_qwen2,internvl3_5_2b,internvl3_5_8b,qwen3vl_8b,qwen3vl_32b,lingshu_32b,qwen2_5vl_72b_api,qwen3vl_235b_a22b_api,internvideo2_5_chat_8b"
 IFS=',' read -r -a models <<<"$available_models"
 
 while [[ $# -gt 0 ]]; do
@@ -221,6 +221,12 @@ for model in "${models[@]}"; do
         model_family="qwen3vl_32b"
         model="qwen3vl_32b_${num_frames}f"
         model_args="pretrained=~/.cache/modelscope/hub/models/Qwen/Qwen3-VL-32B-Instruct,modality=video,max_frames_num=$num_frames,device_map=auto"
+        num_processes=1
+        ;;
+    "lingshu_32b")
+        model_family="lingshu_32b"
+        model="lingshu_32b_${num_frames}f"
+        model_args="pretrained=lingshu-medical-mllm/Lingshu-32B,modality=video,max_frames_num=$num_frames,device_map=auto"
         num_processes=1
         ;;
     "qwen2_5vl_72b_api")

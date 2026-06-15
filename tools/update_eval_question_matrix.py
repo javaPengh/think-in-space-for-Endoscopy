@@ -12,6 +12,16 @@ DOCS_DIR = REPO_ROOT / "docs"
 DEFAULT_DATA_PATH = DOCS_DIR / "eval_question_matrix.json"
 DEFAULT_HTML_PATH = DOCS_DIR / "eval_question_matrix.html"
 MRA_METRIC = "MRA:.5:.95:.05"
+SOURCE_ID_KEYS = ("question_id", "id", "ID", "Question_ID", "questionId")
+NUMERIC_QUESTION_TYPES = {
+    "counting(object)",
+    "counting(action)",
+    "polyp_size_estimation(ref)",
+    "object_abs_distance",
+    "object_counting",
+    "object_size_estimation",
+    "room_size_estimation",
+}
 
 
 def update_question_matrix_from_sample_file(sample_file_path, data_path=None, html_path=None):
@@ -27,7 +37,7 @@ def update_question_matrix_from_sample_file(sample_file_path, data_path=None, ht
     sample_path_text = _relative_or_absolute(sample_path)
     rows = [row for row in matrix_data.get("rows", []) if row.get("sample_path") != sample_path_text]
     rows.extend(run_rows)
-    rows.sort(key=lambda row: (str(row.get("timestamp", "")), str(row.get("model", "")), str(row.get("sampling_strategy", "")), str(row.get("doc_id", ""))))
+    rows.sort(key=lambda row: (str(row.get("timestamp", "")), str(row.get("model", "")), str(row.get("sampling_strategy", "")), _sortable_doc_id(row.get("doc_id"))))
 
     matrix_data = {
         "updated_at": datetime.now().isoformat(timespec="seconds"),
@@ -54,7 +64,8 @@ def build_question_rows(sample_data, sample_path):
         score_doc = log.get("vsibench_score") or {}
         doc = log.get("doc") or {}
         source_doc = score_doc if score_doc else doc
-        doc_id = log.get("doc_id")
+        eval_doc_id = log.get("doc_id")
+        doc_id = _source_doc_id(source_doc, doc, eval_doc_id)
         answer_type = source_doc.get("answer_type") or _infer_answer_type(source_doc.get("question_type"))
         score = _score_percent(score_doc, answer_type)
         is_correct = _choice_is_correct(score_doc, answer_type)
@@ -415,6 +426,36 @@ def _model_name_from_suffix(suffix):
     return text or None
 
 
+def _source_doc_id(*sources):
+    for source in sources[:-1]:
+        if not isinstance(source, dict):
+            continue
+        for key in SOURCE_ID_KEYS:
+            value = source.get(key)
+            if value is not None and str(value).strip():
+                return _normalize_doc_id(value)
+    return _normalize_doc_id(sources[-1])
+
+
+def _normalize_doc_id(value):
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    text = str(value).strip()
+    if re.fullmatch(r"\d+\.0+", text):
+        return int(float(text))
+    return value
+
+
+def _sortable_doc_id(value):
+    normalized = _normalize_doc_id(value)
+    try:
+        return (0, int(normalized))
+    except (TypeError, ValueError):
+        return (1, str(normalized))
+
+
 def _sampling_record(model_args):
     visual_input_mode = model_args.get("visual_input_mode", "visual")
     video_input_mode = model_args.get("video_input_mode")
@@ -477,7 +518,7 @@ def _format_number(value):
 
 def _infer_answer_type(question_type):
     question_type = str(question_type or "")
-    if question_type in {"object_abs_distance", "object_counting", "object_size_estimation", "room_size_estimation"}:
+    if question_type in NUMERIC_QUESTION_TYPES:
         return "numeric"
     if question_type:
         return "multiple_choice"
@@ -507,7 +548,7 @@ def _numeric_is_scored(score, answer_type):
 
 
 def _is_choice(answer_type):
-    return str(answer_type or "").lower() in {"mca", "mcq", "multiple_choice", "choice"}
+    return str(answer_type or "").lower() in {"mca", "mac", "mcq", "multiple_choice", "choice"}
 
 
 def _format_options(options):
