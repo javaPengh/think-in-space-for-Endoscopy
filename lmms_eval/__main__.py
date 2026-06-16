@@ -256,6 +256,11 @@ def parse_eval_args() -> argparse.Namespace:
         help="Free-form note for this evaluation run. It is saved to results.json and shown in the dashboard table.",
     )
     parser.add_argument(
+        "--data_version",
+        default=os.getenv("VSI_DATA_VERSION", "default"),
+        help="Dataset/evaluation data version for separating dashboard statistics across sampled datasets.",
+    )
+    parser.add_argument(
         "--hf_hub_log_args",
         type=str,
         default="",

@@ -28,6 +28,7 @@ gen_kwargs=""
 use_gen_kwargs=false
 natural_gen_kwargs="max_new_tokens=256,temperature=0,top_p=1.0,num_beams=1,do_sample=false"
 run_note=""
+data_version="${VSI_DATA_VERSION:-default}"
 
 available_models="gemini_3_1_pro,gemini_3_1_flash_lite,gpt5_4,llava_one_vision_1_5_8b,llava_next_video_7b_qwen2,internvl3_5_2b,internvl3_5_8b,qwen3vl_8b,qwen3vl_32b,lingshu_32b,qwen2_5vl_72b_api,qwen3vl_235b_a22b_api,internvideo2_5_chat_8b"
 IFS=',' read -r -a models <<<"$available_models"
@@ -104,6 +105,10 @@ while [[ $# -gt 0 ]]; do
         run_note="$2"
         shift 2
         ;;
+    --data_version|--dataset_version)
+        data_version="$2"
+        shift 2
+        ;;
     *)
         echo "Unknown argument: $1"
         exit 1
@@ -132,6 +137,7 @@ esac
 export VSI_VISUAL_INPUT_MODE="$visual_input_mode"
 export VSI_ANSWER_MODE="$answer_mode"
 export VSI_RUN_NOTE="$run_note"
+export VSI_DATA_VERSION="$data_version"
 requested_num_processes="$num_processes"
 requested_launcher="$launcher"
 
@@ -226,7 +232,7 @@ for model in "${models[@]}"; do
     "lingshu_32b")
         model_family="lingshu_32b"
         model="lingshu_32b_${num_frames}f"
-        model_args="pretrained=lingshu-medical-mllm/Lingshu-32B,modality=video,max_frames_num=$num_frames,device_map=auto"
+        model_args="pretrained=~/.cache/modelscope/hub/models/lingshu-medical-mllm/Lingshu-32B,modality=video,max_frames_num=$num_frames,device_map=auto"
         num_processes=1
         ;;
     "qwen2_5vl_72b_api")
@@ -334,6 +340,10 @@ for model in "${models[@]}"; do
         evaluate_script="$evaluate_script \
         --run_note $run_note_arg"
     fi
+
+    data_version_arg=$(quote_arg "$data_version")
+    evaluate_script="$evaluate_script \
+        --data_version $data_version_arg"
 
     evaluate_script="$evaluate_script \
         "

@@ -37,7 +37,7 @@ def update_question_matrix_from_sample_file(sample_file_path, data_path=None, ht
     sample_path_text = _relative_or_absolute(sample_path)
     rows = [row for row in matrix_data.get("rows", []) if row.get("sample_path") != sample_path_text]
     rows.extend(run_rows)
-    rows.sort(key=lambda row: (str(row.get("timestamp", "")), str(row.get("model", "")), str(row.get("sampling_strategy", "")), _sortable_doc_id(row.get("doc_id"))))
+    rows.sort(key=lambda row: (str(row.get("timestamp", "")), str(row.get("data_version", "default")), str(row.get("model", "")), str(row.get("sampling_strategy", "")), _sortable_doc_id(row.get("doc_id"))))
 
     matrix_data = {
         "updated_at": datetime.now().isoformat(timespec="seconds"),
@@ -57,6 +57,7 @@ def build_question_rows(sample_data, sample_path):
     model = _resolve_model_name(args, model_args, sample_path)
     sampling_strategy = _sampling_label(_sampling_record(model_args))
     run_note = args.get("run_note") or args.get("note") or ""
+    data_version = str(args.get("data_version") or args.get("dataset_version") or "default").strip() or "default"
     sample_path_text = _relative_or_absolute(sample_path)
 
     rows = []
@@ -85,6 +86,7 @@ def build_question_rows(sample_data, sample_path):
                 "row_id": hashlib.sha256(row_id_seed.encode("utf-8")).hexdigest()[:12],
                 "timestamp": timestamp,
                 "model": model,
+                "data_version": data_version,
                 "sampling_strategy": sampling_strategy,
                 "note": run_note,
                 "question_type": source_doc.get("question_type", ""),
@@ -107,6 +109,7 @@ def build_question_rows(sample_data, sample_path):
 def render_question_matrix_html(data):
     rows = data.get("rows", [])
     generated_at = html.escape(str(data.get("updated_at", "")))
+    data_version_options = _select_options(sorted({row.get("data_version", "default") for row in rows}))
     model_options = _select_options(sorted({row.get("model", "") for row in rows if row.get("model")}))
     sampling_options = _select_options(sorted({row.get("sampling_strategy", "") for row in rows if row.get("sampling_strategy")}))
     body_rows = "\n".join(_render_row(row) for row in rows)
@@ -241,6 +244,10 @@ def render_question_matrix_html(data):
   <main>
     <div class="toolbar">
       <input id="search" type="search" placeholder="搜索模型、题目、输出、真实答案">
+      <select id="data-version-filter">
+        <option value="">全部数据版本</option>
+        {data_version_options}
+      </select>
       <select id="model-filter">
         <option value="">全部模型</option>
         {model_options}
@@ -254,6 +261,7 @@ def render_question_matrix_html(data):
       <table>
         <colgroup>
           <col style="width: 112px">
+          <col style="width: 120px">
           <col style="width: 145px">
           <col style="width: 100px">
           <col style="width: 180px">
@@ -270,6 +278,7 @@ def render_question_matrix_html(data):
         <thead>
           <tr>
             <th>时间</th>
+            <th>数据版本</th>
             <th>模型</th>
             <th>采样策略</th>
             <th>备注</th>
@@ -294,6 +303,7 @@ def render_question_matrix_html(data):
   <script>
     const rows = Array.from(document.querySelectorAll("#matrix-body tr"));
     const search = document.getElementById("search");
+    const dataVersionFilter = document.getElementById("data-version-filter");
     const modelFilter = document.getElementById("model-filter");
     const samplingFilter = document.getElementById("sampling-filter");
     const visibleCount = document.getElementById("visible-count");
@@ -301,14 +311,16 @@ def render_question_matrix_html(data):
 
     function applyFilters() {{
       const keyword = search.value.trim().toLowerCase();
+      const dataVersion = dataVersionFilter.value;
       const model = modelFilter.value;
       const sampling = samplingFilter.value;
       let shown = 0;
       rows.forEach((row) => {{
+        const matchesDataVersion = !dataVersion || row.dataset.dataVersion === dataVersion;
         const matchesModel = !model || row.dataset.model === model;
         const matchesSampling = !sampling || row.dataset.sampling === sampling;
         const matchesKeyword = !keyword || row.textContent.toLowerCase().includes(keyword);
-        const visible = matchesModel && matchesSampling && matchesKeyword;
+        const visible = matchesDataVersion && matchesModel && matchesSampling && matchesKeyword;
         row.hidden = !visible;
         if (visible) shown += 1;
       }});
@@ -317,6 +329,7 @@ def render_question_matrix_html(data):
     }}
 
     search.addEventListener("input", applyFilters);
+    dataVersionFilter.addEventListener("change", applyFilters);
     modelFilter.addEventListener("change", applyFilters);
     samplingFilter.addEventListener("change", applyFilters);
   </script>
@@ -329,8 +342,9 @@ def _render_row(row):
     status_text, status_class = _status_label(row)
     score = row.get("score")
     score_text = "" if score is None else f"{float(score):.2f}"
-    return f"""<tr data-model="{_attr(row.get('model'))}" data-sampling="{_attr(row.get('sampling_strategy'))}">
+    return f"""<tr data-data-version="{_attr(row.get('data_version', 'default'))}" data-model="{_attr(row.get('model'))}" data-sampling="{_attr(row.get('sampling_strategy'))}">
   <td class="nowrap">{_cell(row.get('timestamp'))}</td>
+  <td class="nowrap">{_cell(row.get('data_version', 'default'))}</td>
   <td class="nowrap">{_cell(row.get('model'))}</td>
   <td class="nowrap">{_cell(row.get('sampling_strategy'))}</td>
   <td class="text">{_cell(row.get('note'))}</td>

@@ -95,6 +95,7 @@ def build_run_record(results, result_path):
     if video_input_mode:
         sampling["video_input_mode"] = video_input_mode
     token_usage = _normalize_token_usage(config.get("token_usage")) or _fallback_token_usage(model, sampling)
+    data_version = str(config.get("data_version") or config.get("dataset_version") or "default").strip() or "default"
 
     run_seed = f"{timestamp}|{model}|{task_name}|{result_path}"
     run_id = hashlib.sha256(run_seed.encode("utf-8")).hexdigest()[:12]
@@ -105,6 +106,7 @@ def build_run_record(results, result_path):
         "model_family": model_family,
         "pretrained": pretrained,
         "note": config.get("run_note") or config.get("note") or "",
+        "data_version": data_version,
         "task": task_name,
         "sampling": sampling,
         "metrics": task_metrics,
@@ -546,10 +548,11 @@ def render_dashboard_html(data):
       <h2>筛选</h2>
       <div class="filters">
         <input id="search" placeholder="搜索模型或路径" />
+        <select id="dataVersionFilter"><option value="">全部数据版本</option></select>
         <select id="modelFilter"><option value="">全部模型</option></select>
         <select id="samplingFilter"><option value="">全部采样策略</option></select>
       </div>
-      <div class="hint">筛选器不会同时处于全部状态；图表只展示同模型同采样的最新记录，评估记录保留全部历史。</div>
+      <div class="hint">默认展示最新数据版本；图表只展示同数据版本、同模型、同采样的最新记录。</div>
     </section>
     <section><h2>指标对比</h2><svg id="metricChart" class="chart"></svg></section>
     <section>
@@ -586,6 +589,7 @@ def render_dashboard_html(data):
     const fmtScore = v => v === null || v === undefined ? 'N/A' : Number(v).toLocaleString(undefined, {{ maximumFractionDigits: 1 }});
     const html = v => String(v ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
     const metric = (r, k) => r.metrics && typeof r.metrics[k] === 'number' ? r.metrics[k] : null;
+    const dataVersionLabel = r => r.data_version || 'default';
     const samplingLabel = r => {{
       const s = r.sampling || {{}};
       if (s.visual_input_mode === 'none' || s.strategy === 'blind') return 'blind';
@@ -595,8 +599,8 @@ def render_dashboard_html(data):
       return `${{s.strategy || 'unknown'}}${{mode}}`;
     }};
     const token = (r, k) => r.token_usage ? r.token_usage[k] : null;
-    const seriesLabel = r => `${{r.model || 'unknown'}} / ${{samplingLabel(r)}}`;
-    const seriesKey = r => `${{r.model || 'unknown'}}||${{samplingLabel(r)}}`;
+    const seriesLabel = r => `${{dataVersionLabel(r)}} / ${{r.model || 'unknown'}} / ${{samplingLabel(r)}}`;
+    const seriesKey = r => `${{dataVersionLabel(r)}}||${{r.model || 'unknown'}}||${{samplingLabel(r)}}`;
     const hiddenSeriesKeys = new Set();
     const palette = ['#2563eb', '#c2410c', '#0f9f6e', '#7c3aed', '#be123c', '#0e7490', '#a16207', '#4f46e5', '#15803d'];
     const baselines = (state.baselines && state.baselines.items) || {{}};
@@ -635,14 +639,23 @@ def render_dashboard_html(data):
     }};
 
     function initFilters() {{
+      const dataVersions = [...new Set(activeRuns().map(dataVersionLabel).filter(Boolean))].sort();
       const models = [...new Set(activeRuns().map(r => r.model).filter(Boolean))].sort();
       const samplings = [...new Set(activeRuns().map(samplingLabel))].sort();
+      const dataVersionFilter = document.getElementById('dataVersionFilter');
       const modelFilter = document.getElementById('modelFilter');
       const samplingFilter = document.getElementById('samplingFilter');
       const defaultSampling = preferredSamplingValue(samplings);
+      const latestRun = activeRuns().slice().sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp)))[0];
+      const defaultDataVersion = latestRun ? dataVersionLabel(latestRun) : '';
+      dataVersionFilter.innerHTML += dataVersions.map(v => `<option value="${{html(v)}}">${{html(v)}}</option>`).join('');
       modelFilter.innerHTML += models.map(m => `<option value="${{html(m)}}">${{html(m)}}</option>`).join('');
       samplingFilter.innerHTML += samplings.map(s => `<option value="${{html(s)}}">${{html(s)}}</option>`).join('');
+      dataVersionFilter.value = defaultDataVersion;
       samplingFilter.value = defaultSampling;
+      dataVersionFilter.addEventListener('change', () => {{
+        render();
+      }});
       modelFilter.addEventListener('change', () => {{
         enforceFilterState(defaultSampling);
         updateFilterState();
@@ -682,9 +695,10 @@ def render_dashboard_html(data):
 
     function filteredRuns() {{
       const q = document.getElementById('search').value.toLowerCase();
+      const d = document.getElementById('dataVersionFilter').value;
       const m = document.getElementById('modelFilter').value;
       const s = document.getElementById('samplingFilter').value;
-      return activeRuns().filter(r => (!m || r.model === m) && (!s || samplingLabel(r) === s) && (!q || JSON.stringify(r).toLowerCase().includes(q)));
+      return activeRuns().filter(r => (!d || dataVersionLabel(r) === d) && (!m || r.model === m) && (!s || samplingLabel(r) === s) && (!q || JSON.stringify(r).toLowerCase().includes(q)));
     }}
 
     function renderBarChart(svgId, items) {{
@@ -814,10 +828,10 @@ def render_dashboard_html(data):
       const preferred = preferredMetrics;
       const keys = [...preferred.filter(k => metricKeys.includes(k)), ...metricKeys.filter(k => !preferred.includes(k)).sort()];
       const visibleMetricKeys = keys.slice(0, 16);
-      const head = ['时间', '模型', '采样', '备注', 'Token'];
+      const head = ['时间', '数据版本', '模型', '采样', '备注', 'Token'];
       const header = head.map(h => `<th>${{h}}</th>`).join('') + visibleMetricKeys.map(k => `<th title="${{html(k)}}">${{html(metricLabel(k))}}</th>`).join('') + '<th>操作</th>';
       const rows = items.map(r => `<tr>
-        <td>${{html(r.timestamp)}}</td><td>${{html(r.model)}}</td><td><span class="pill">${{html(samplingLabel(r))}}</span></td>
+        <td>${{html(r.timestamp)}}</td><td><span class="pill">${{html(dataVersionLabel(r))}}</span></td><td>${{html(r.model)}}</td><td><span class="pill">${{html(samplingLabel(r))}}</span></td>
         <td class="note-cell">${{html(r.note || '')}}</td>
         <td>${{html(fmt(token(r, 'total_tokens')))}} </td>
         ${{visibleMetricKeys.map(k => `<td>${{html(fmt(metric(r, k)))}}</td>`).join('')}}
@@ -827,8 +841,9 @@ def render_dashboard_html(data):
     }}
 
     function render() {{
-      renderBarChart('metricChart', filteredRuns());
-      renderTable(activeRuns());
+      const items = filteredRuns();
+      renderBarChart('metricChart', items);
+      renderTable(items);
     }}
 
     function initDeleteDialog() {{

@@ -60,6 +60,7 @@ README 后文提到的 `C:\Users\a2818\Desktop\QA\抽样测试.xlsx` 是用于�
 | 盲测 | `--visual_input_mode none` | 不提供图片或视频，只把问题文本送给模型。 |
 | 自然输出 | `--answer_mode natural` | 允许模型自然语言解释，最后用 `Final answer: ...` 给可抽取答案。指标仍使用抽取后的受限答案计算。 |
 | 评估备注 | `--run_note "文本"` | 给本次评估记录添加自由文本备注，方便记录额外变量或实验条件。 |
+| 数据版本 | `--data_version VERSION` | 标记本次评估使用的数据源或采样版本。Dashboard 和题目级矩阵会按该字段筛选，避免新旧采样数据混在一起统计。默认 `default`。 |
 | 指定 CUDA 编号 | `--cuda_visible_devices 0,1` | 指定本次评估可见的 GPU 编号，会写入 `CUDA_VISIBLE_DEVICES`。 |
 
 ## 命令示例
@@ -124,6 +125,14 @@ bash evaluate_all_in_one.sh --model qwen3vl_8b --benchmark vsibench --num_proces
 bash evaluate_all_in_one.sh --model qwen3vl_8b --benchmark vsibench --num_processes 2 --num_frames 16 --run_note "prompt=v2 temperature=0 data=sampleA"
 ```
 
+### 使用新的采样数据版本
+
+```bash
+bash evaluate_all_in_one.sh --model qwen3vl_8b --benchmark vsibench --num_processes 2 --num_frames 16 --data_version new_sample_202606
+```
+
+`--data_version` 会写入 `results.json` 的 `config.data_version`，并同步进入 `docs/eval_dashboard_data.json` 和 `docs/eval_question_matrix.json`。同一份 dashboard 中可以保留多个数据版本的历史记录，但页面默认只展示最新评估记录对应的数据版本；需要跨版本查看时，可以在页面筛选器中选择 `全部数据版本`。
+
 ### 评估多个模型
 
 ```bash
@@ -150,7 +159,7 @@ python tools/update_eval_dashboard.py logs/YYYYMMDD/vsibench/path/to/results.jso
 docs/eval_dashboard.html
 ```
 
-评估记录表会保留全部历史记录，并显示 `备注` 列。图表仍按同一模型和同一采样策略只取最新记录；如果需要对比同模型同采样策略下的其它实验变量，可以在评估时用 `--run_note` 标注，然后直接在评估记录表里对比各指标。
+评估记录表会保留全部历史记录，并显示 `数据版本` 和 `备注` 列。Dashboard 默认展示最新评估记录对应的数据版本，图表按同一数据版本、同一模型和同一采样策略只取最新记录；如果需要对比不同采样数据源，可以在页面筛选器中切换数据版本或选择 `全部数据版本`。
 
 ## 自然输出和题目级对错矩阵
 
