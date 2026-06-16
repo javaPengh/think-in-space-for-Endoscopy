@@ -113,12 +113,16 @@ class ColonGPT(lmms):
             self.device_map = f"cuda:{self.accelerator.local_process_index}" if torch.cuda.is_available() else "cpu"
 
         model_dtype = self._resolve_dtype(torch_dtype)
-        self._model = AutoModelForCausalLM.from_pretrained(
-            self.path,
-            torch_dtype=model_dtype,
-            device_map=self.device_map,
-            trust_remote_code=True,
-        ).eval()
+        model_kwargs = {
+            "torch_dtype": model_dtype,
+            "low_cpu_mem_usage": True,
+            "trust_remote_code": True,
+        }
+        if self.device_map == "auto":
+            model_kwargs["device_map"] = self.device_map
+            self._model = AutoModelForCausalLM.from_pretrained(self.path, **model_kwargs).eval()
+        else:
+            self._model = AutoModelForCausalLM.from_pretrained(self.path, **model_kwargs).eval().to(self._device)
         self._tokenizer = AutoTokenizer.from_pretrained(self.path, trust_remote_code=True)
         if self._tokenizer.pad_token_id is None and self._tokenizer.eos_token_id is not None:
             self._tokenizer.pad_token = self._tokenizer.eos_token
@@ -174,10 +178,25 @@ class ColonGPT(lmms):
         raise ValueError(f"Unsupported torch_dtype for ColonGPT: {torch_dtype}")
 
     def _infer_input_device(self):
+        if hasattr(self.model, "get_model"):
+            projector = getattr(self.model.get_model(), "mm_projector", None)
+            if projector is not None:
+                try:
+                    return next(projector.parameters()).device
+                except StopIteration:
+                    pass
         try:
             return next(self.model.parameters()).device
         except StopIteration:
             return self._device
+
+    def _get_vision_tower(self):
+        for target in [self.model, getattr(self.model, "model", None)]:
+            if target is not None and hasattr(target, "get_vision_tower"):
+                vision_tower = target.get_vision_tower()
+                if vision_tower is not None:
+                    return vision_tower
+        return None
 
     def _patch_vision_tower_path(self):
         if not self.vision_tower_pretrained:
@@ -187,17 +206,17 @@ class ColonGPT(lmms):
             if config is not None and hasattr(config, "mm_vision_tower"):
                 config.mm_vision_tower = self.vision_tower_pretrained
 
-        vision_tower = None
-        for target in [self.model, getattr(self.model, "model", None)]:
-            if target is not None and hasattr(target, "get_vision_tower"):
-                vision_tower = target.get_vision_tower()
-                if vision_tower is not None:
-                    break
-
+        vision_tower = self._get_vision_tower()
         if vision_tower is not None:
             if getattr(vision_tower, "is_loaded", False):
                 eval_logger.warning("ColonGPT vision tower was already loaded before path patching; verify it used the intended local SigLIP path.")
             vision_tower.vision_tower_name = self.vision_tower_pretrained
+
+    def _move_vision_tower_to_device(self):
+        vision_tower = self._get_vision_tower()
+        if vision_tower is None or not getattr(vision_tower, "is_loaded", False):
+            return
+        vision_tower.to(device=self.device, dtype=self.model.dtype)
 
     def _flatten_visuals(self, visual):
         if visual is None or visual == []:
@@ -313,6 +332,7 @@ class ColonGPT(lmms):
         if not images:
             return None
         image_tensor = self.model.process_images(images, self.model.config)
+        self._move_vision_tower_to_device()
         return image_tensor.to(dtype=self.model.dtype, device=self.device)
 
     def _normalize_until(self, until):

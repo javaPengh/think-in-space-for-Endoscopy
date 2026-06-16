@@ -30,7 +30,7 @@ natural_gen_kwargs="max_new_tokens=256,temperature=0,top_p=1.0,num_beams=1,do_sa
 run_note=""
 data_version="${VSI_DATA_VERSION:-default}"
 
-available_models="gemini_3_1_pro,gemini_3_1_flash_lite,gpt5_4,llava_one_vision_1_5_8b,llava_next_video_7b_qwen2,internvl3_5_2b,internvl3_5_8b,qwen3vl_8b,qwen3vl_32b,lingshu_32b,colongpt_v1,qwen2_5vl_72b_api,qwen3vl_235b_a22b_api,internvideo2_5_chat_8b"
+available_models="gemini_3_1_pro,gemini_3_1_flash_lite,gpt5_4,llava_one_vision_1_5_8b,llava_next_video_7b_qwen2,internvl3_5_2b,internvl3_5_8b,qwen3vl_8b,qwen3vl_32b,lingshu_32b,colongpt,qwen2_5vl_72b_api,qwen3vl_235b_a22b_api,internvideo2_5_chat_8b"
 IFS=',' read -r -a models <<<"$available_models"
 
 while [[ $# -gt 0 ]]; do
@@ -235,9 +235,9 @@ for model in "${models[@]}"; do
         model_args="pretrained=~/.cache/modelscope/hub/models/lingshu-medical-mllm/Lingshu-32B,modality=video,max_frames_num=$num_frames,device_map=auto"
         num_processes=1
         ;;
-    "colongpt_v1")
+    "colongpt")
         model_family="colongpt"
-        model="colongpt_v1_${num_frames}f"
+        model="colongpt_${num_frames}f"
         model_args="pretrained=~/.cache/modelscope/hub/models/ColonGPT,vision_tower_pretrained=~/.cache/modelscope/hub/models/google/siglip-so400m-patch14-384,modality=video,max_frames_num=4"
         ;;
     "qwen2_5vl_72b_api")
