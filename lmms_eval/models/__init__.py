@@ -13,6 +13,7 @@ logger.add(sys.stdout, level="WARNING")
 AVAILABLE_MODELS = {
     "batch_gpt4": "BatchGPT4",
     "claude": "Claude",
+    "colongpt": "ColonGPT",
     "from_log": "FromLog",
     "fuyu": "Fuyu",
     "gemini_api": "GeminiAPI",
