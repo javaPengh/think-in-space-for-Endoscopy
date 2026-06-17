@@ -79,6 +79,7 @@ def build_question_rows(sample_data, sample_path):
             restricted_prediction = score_doc.get("prediction")
         if restricted_prediction is None:
             restricted_prediction = _first_scalar(log.get("filtered_resps"))
+        display_restricted_prediction = "" if natural_prediction else restricted_prediction
 
         row_id_seed = f"{sample_path_text}|{doc_id}"
         rows.append(
@@ -94,7 +95,7 @@ def build_question_rows(sample_data, sample_path):
                 "doc_id": doc_id,
                 "question": source_doc.get("question", ""),
                 "natural_prediction": natural_prediction if natural_prediction is not None else "",
-                "restricted_prediction": restricted_prediction if restricted_prediction is not None else "",
+                "restricted_prediction": display_restricted_prediction if display_restricted_prediction is not None else "",
                 "ground_truth": source_doc.get("ground_truth", log.get("target", "")),
                 "options": _format_options(source_doc.get("options")),
                 "score": score,
