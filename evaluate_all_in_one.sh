@@ -30,7 +30,7 @@ natural_gen_kwargs="max_new_tokens=256,temperature=0,top_p=1.0,num_beams=1,do_sa
 run_note=""
 data_version="${VSI_DATA_VERSION:-default}"
 
-available_models="gemini_3_1_pro,gemini_3_1_flash_lite,gpt5_4,llava_one_vision_1_5_8b,llava_next_video_7b_qwen2,internvl3_5_2b,internvl3_5_8b,qwen3vl_8b,qwen3vl_32b,lingshu_32b,medgemma_27b,colongpt,qwen2_5vl_72b_api,qwen3vl_235b_a22b_api,internvideo2_5_chat_8b"
+available_models="gemini_3_1_pro,gemini_3_1_flash_lite,gpt5_4,llava_one_vision_1_5_8b,llava_next_video_7b_qwen2,internvl3_5_2b,internvl3_5_8b,qwen3vl_8b,qwen3vl_32b,medmo_8b_next,lingshu_32b,medgemma_27b,colongpt,qwen2_5vl_72b_api,qwen3vl_235b_a22b_api,internvideo2_5_chat_8b"
 IFS=',' read -r -a models <<<"$available_models"
 
 while [[ $# -gt 0 ]]; do
@@ -228,6 +228,11 @@ for model in "${models[@]}"; do
         model="qwen3vl_32b_${num_frames}f"
         model_args="pretrained=~/.cache/modelscope/hub/models/Qwen/Qwen3-VL-32B-Instruct,modality=video,max_frames_num=$num_frames,device_map=auto"
         num_processes=1
+        ;;
+    "medmo_8b_next")
+        model_family="medmo_8b_next"
+        model="medmo_8b_next_${num_frames}f"
+        model_args="pretrained=~/.cache/modelscope/hub/models/MBZUAI/MedMO-8B-Next,modality=video,max_frames_num=$num_frames"
         ;;
     "lingshu_32b")
         model_family="lingshu_32b"

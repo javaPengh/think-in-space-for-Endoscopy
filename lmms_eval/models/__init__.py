@@ -36,6 +36,7 @@ AVAILABLE_MODELS = {
     "longva": "LongVA",
     "mantis": "Mantis",
     "medgemma_27b": "MedGemma27B",
+    "medmo_8b_next": "MedMO8BNext",
     "minicpm_v": "MiniCPM_V",
     "mplug_owl_video": "mplug_Owl",
     "phi3v": "Phi3v",
