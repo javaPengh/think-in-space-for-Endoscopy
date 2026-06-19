@@ -35,7 +35,7 @@ def update_dashboard_from_result_file(result_file_path, data_path=None, html_pat
 
     run = build_run_record(results, result_path)
     data = _read_data(data_path)
-    runs = [item for item in data.get("runs", []) if item.get("result_path") != run["result_path"]]
+    runs = [_normalize_run_record(item) for item in data.get("runs", []) if item.get("result_path") != run["result_path"]]
     runs.append(run)
     runs.sort(key=lambda item: item.get("timestamp", ""))
     baselines = _resolve_baselines(data, baseline_excel_path, baseline_cache_path)
@@ -55,7 +55,7 @@ def refresh_dashboard(data_path=None, html_path=None, baseline_excel_path=None, 
     baseline_cache_path = Path(baseline_cache_path or DEFAULT_BASELINE_CACHE_PATH).expanduser().resolve()
     data = _read_data(data_path)
     baselines = _resolve_baselines(data, baseline_excel_path, baseline_cache_path)
-    data = {"runs": data.get("runs", [])}
+    data = {"runs": [_normalize_run_record(item) for item in data.get("runs", [])]}
     if baselines:
         data["baselines"] = baselines
 
@@ -96,6 +96,7 @@ def build_run_record(results, result_path):
         sampling["video_input_mode"] = video_input_mode
     token_usage = _normalize_token_usage(config.get("token_usage")) or _fallback_token_usage(model, sampling)
     data_version = str(config.get("data_version") or config.get("dataset_version") or "default").strip() or "default"
+    answer_mode = _normalize_answer_mode(config.get("answer_mode") or _infer_answer_mode(result_path, config))
 
     run_seed = f"{timestamp}|{model}|{task_name}|{result_path}"
     run_id = hashlib.sha256(run_seed.encode("utf-8")).hexdigest()[:12]
@@ -107,12 +108,42 @@ def build_run_record(results, result_path):
         "pretrained": pretrained,
         "note": config.get("run_note") or config.get("note") or "",
         "data_version": data_version,
+        "answer_mode": answer_mode,
         "task": task_name,
         "sampling": sampling,
         "metrics": task_metrics,
         "token_usage": token_usage,
         "result_path": _relative_or_absolute(result_path),
     }
+
+
+def _normalize_run_record(run):
+    normalized = dict(run)
+    normalized["answer_mode"] = _normalize_answer_mode(normalized.get("answer_mode") or _infer_answer_mode(normalized.get("result_path"), normalized))
+    return normalized
+
+
+def _normalize_answer_mode(value):
+    mode = str(value or "").strip().lower()
+    if mode in {"natural", "cot", "iot", "chain_of_thought", "chain-of-thought"}:
+        return "natural"
+    return "restricted"
+
+
+def _infer_answer_mode(result_path, config=None):
+    config = config or {}
+    searchable_parts = [
+        result_path,
+        config.get("log_samples_suffix"),
+        config.get("run_note"),
+        config.get("note"),
+    ]
+    searchable = " ".join(str(part or "") for part in searchable_parts).lower()
+    if re.search(r"(^|[_\\/\-\s])natural($|[_\\/\-\s])", searchable):
+        return "natural"
+    if re.search(r"(^|[_\\/\-\s])(cot|iot)($|[_\\/\-\s])", searchable):
+        return "natural"
+    return "restricted"
 
 
 def _display_model_name(model_family, pretrained, result_path):
@@ -598,11 +629,18 @@ def render_dashboard_html(data):
       if (s.strategy === 'uniform') return `uniform_${{s.max_frames_num ?? 'N/A'}}f${{mode}}`;
       return `${{s.strategy || 'unknown'}}${{mode}}`;
     }};
+    const answerModeKey = r => {{
+      const mode = String(r.answer_mode || '').toLowerCase();
+      if (mode === 'natural' || mode === 'cot' || mode === 'iot') return 'natural';
+      const path = String(r.result_path || '').toLowerCase();
+      return /(^|[_\\/\\-\\s])(natural|cot|iot)($|[_\\/\\-\\s])/.test(path) ? 'natural' : 'restricted';
+    }};
+    const answerModeLabel = r => answerModeKey(r) === 'natural' ? 'COT' : '直接输出';
+    const answerModeColor = r => answerModeKey(r) === 'natural' ? '#c2410c' : '#2563eb';
     const token = (r, k) => r.token_usage ? r.token_usage[k] : null;
-    const seriesLabel = r => `${{dataVersionLabel(r)}} / ${{r.model || 'unknown'}} / ${{samplingLabel(r)}}`;
-    const seriesKey = r => `${{dataVersionLabel(r)}}||${{r.model || 'unknown'}}||${{samplingLabel(r)}}`;
+    const seriesLabel = r => `${{dataVersionLabel(r)}} / ${{r.model || 'unknown'}} / ${{samplingLabel(r)}} / ${{answerModeLabel(r)}}`;
+    const seriesKey = r => `${{dataVersionLabel(r)}}||${{r.model || 'unknown'}}||${{samplingLabel(r)}}||${{answerModeKey(r)}}`;
     const hiddenSeriesKeys = new Set();
-    const palette = ['#2563eb', '#c2410c', '#0f9f6e', '#7c3aed', '#be123c', '#0e7490', '#a16207', '#4f46e5', '#15803d'];
     const baselines = (state.baselines && state.baselines.items) || {{}};
     const baselineStyles = {{
       random: {{ label: '随机基线', color: '#6b7280', dash: '6 4', width: 1.5 }},
@@ -684,10 +722,10 @@ def render_dashboard_html(data):
       samplingFilter.options[0].disabled = !modelFilter.value;
     }}
 
-    function latestPerModelSampling(items) {{
+    function latestPerSeries(items) {{
       const seen = new Map();
       for (const r of items) {{
-        const key = `${{r.model}}||${{samplingLabel(r)}}`;
+        const key = seriesKey(r);
         if (!seen.has(key) || String(r.timestamp).localeCompare(String(seen.get(key).timestamp)) > 0) seen.set(key, r);
       }}
       return [...seen.values()].sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp)));
@@ -706,10 +744,10 @@ def render_dashboard_html(data):
       svg.innerHTML = '';
       const width = svg.clientWidth || 1100, height = svg.clientHeight || 500;
       const padLeft = 58, padRight = 28, padTop = 84, padBottom = 78;
-      const allChartItems = latestPerModelSampling(items).slice(0, 12).map((run, index) => ({{
+      const allChartItems = latestPerSeries(items).slice(0, 12).map(run => ({{
         run,
         key: seriesKey(run),
-        color: palette[index % palette.length]
+        color: answerModeColor(run)
       }}));
       const visibleChartItems = allChartItems.filter(item => !hiddenSeriesKeys.has(item.key));
       if (!allChartItems.length) {{
@@ -828,10 +866,11 @@ def render_dashboard_html(data):
       const preferred = preferredMetrics;
       const keys = [...preferred.filter(k => metricKeys.includes(k)), ...metricKeys.filter(k => !preferred.includes(k)).sort()];
       const visibleMetricKeys = keys.slice(0, 16);
-      const head = ['时间', '数据版本', '模型', '采样', '备注', 'Token'];
+      const head = ['时间', '数据版本', '模型', '采样', '输出模式', '备注', 'Token'];
       const header = head.map(h => `<th>${{h}}</th>`).join('') + visibleMetricKeys.map(k => `<th title="${{html(k)}}">${{html(metricLabel(k))}}</th>`).join('') + '<th>操作</th>';
       const rows = items.map(r => `<tr>
         <td>${{html(r.timestamp)}}</td><td><span class="pill">${{html(dataVersionLabel(r))}}</span></td><td>${{html(r.model)}}</td><td><span class="pill">${{html(samplingLabel(r))}}</span></td>
+        <td><span class="pill">${{html(answerModeLabel(r))}}</span></td>
         <td class="note-cell">${{html(r.note || '')}}</td>
         <td>${{html(fmt(token(r, 'total_tokens')))}} </td>
         ${{visibleMetricKeys.map(k => `<td>${{html(fmt(metric(r, k)))}}</td>`).join('')}}
@@ -858,7 +897,7 @@ def render_dashboard_html(data):
         if (!button) return;
         pendingDeleteRunId = button.getAttribute('data-delete-run');
         const run = activeRuns().find(item => item.run_id === pendingDeleteRunId);
-        target.textContent = run ? `确认删除 ${{run.timestamp}} / ${{run.model}} / ${{samplingLabel(run)}} 这条评估记录？` : '确认删除这条评估记录？';
+        target.textContent = run ? `确认删除 ${{run.timestamp}} / ${{run.model}} / ${{samplingLabel(run)}} / ${{answerModeLabel(run)}} 这条评估记录？` : '确认删除这条评估记录？';
         modal.hidden = false;
         confirmButton.focus();
       }});

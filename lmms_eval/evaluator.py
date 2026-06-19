@@ -285,6 +285,7 @@ def simple_evaluate(
                 "fewshot_seed": fewshot_random_seed,
                 "run_note": getattr(cli_args, "run_note", "") if cli_args is not None else "",
                 "data_version": getattr(cli_args, "data_version", "default") if cli_args is not None else "default",
+                "answer_mode": os.getenv("VSI_ANSWER_MODE", "restricted"),
             }
         )
         if hasattr(lm, "get_token_usage_summary"):
