@@ -739,12 +739,27 @@ def render_dashboard_html(data):
       return activeRuns().filter(r => (!d || dataVersionLabel(r) === d) && (!m || r.model === m) && (!s || samplingLabel(r) === s) && (!q || JSON.stringify(r).toLowerCase().includes(q)));
     }}
 
+    function chartAllowsAnswerModeComparison() {{
+      return Boolean(
+        document.getElementById('dataVersionFilter').value &&
+        document.getElementById('modelFilter').value &&
+        document.getElementById('samplingFilter').value
+      );
+    }}
+
+    function chartRuns(items) {{
+      if (chartAllowsAnswerModeComparison()) return items;
+      return items.filter(r => answerModeKey(r) === 'restricted');
+    }}
+
     function renderBarChart(svgId, items) {{
       const svg = document.getElementById(svgId);
       svg.innerHTML = '';
       const width = svg.clientWidth || 1100, height = svg.clientHeight || 500;
       const padLeft = 58, padRight = 28, padTop = 84, padBottom = 78;
-      const allChartItems = latestPerSeries(items).slice(0, 12).map(run => ({{
+      const comparisonEnabled = chartAllowsAnswerModeComparison();
+      const sourceItems = chartRuns(items);
+      const allChartItems = latestPerSeries(sourceItems).slice(0, 12).map(run => ({{
         run,
         key: seriesKey(run),
         color: answerModeColor(run)
@@ -753,6 +768,9 @@ def render_dashboard_html(data):
       if (!allChartItems.length) {{
         svg.insertAdjacentHTML('beforeend', `<text x="${{width / 2}}" y="${{height / 2}}" text-anchor="middle" font-size="13" fill="#667085">暂无记录</text>`);
         return;
+      }}
+      if (!comparisonEnabled) {{
+        svg.insertAdjacentHTML('beforeend', `<text x="${{padLeft}}" y="60" font-size="12" fill="#667085">未同时选定数据集、模型、采样策略时，图表仅展示直接输出结果。</text>`);
       }}
 
       const metricSet = new Set(allChartItems.flatMap(item => Object.keys(item.run.metrics || {{}})));
