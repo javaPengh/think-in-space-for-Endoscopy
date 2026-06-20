@@ -113,7 +113,7 @@ def render_question_matrix_html(data):
     data_version_options = _select_options(sorted({row.get("data_version", "default") for row in rows}))
     model_options = _select_options(sorted({row.get("model", "") for row in rows if row.get("model")}))
     sampling_options = _select_options(sorted({row.get("sampling_strategy", "") for row in rows if row.get("sampling_strategy")}))
-    body_rows = "\n".join(_render_row(row) for row in rows)
+    matrix_rows_json = _json_for_script(rows)
     row_count = len(rows)
 
     return f"""<!doctype html>
@@ -235,6 +235,35 @@ def render_question_matrix_html(data):
       text-align: center;
       color: var(--muted);
     }}
+    .pager {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+      color: var(--muted);
+      font-size: 13px;
+    }}
+    .pager-controls {{
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }}
+    button {{
+      height: 34px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--text);
+      padding: 0 12px;
+      cursor: pointer;
+      font-size: 13px;
+    }}
+    button:disabled {{
+      color: #98a2b3;
+      cursor: not-allowed;
+    }}
   </style>
 </head>
 <body>
@@ -257,6 +286,20 @@ def render_question_matrix_html(data):
         <option value="">全部采样策略</option>
         {sampling_options}
       </select>
+    </div>
+    <div class="pager">
+      <div>当前页 <span id="page-info">0 / 0</span></div>
+      <div class="pager-controls">
+        <label for="page-size">每页</label>
+        <select id="page-size">
+          <option value="50">50</option>
+          <option value="100" selected>100</option>
+          <option value="200">200</option>
+          <option value="500">500</option>
+        </select>
+        <button id="prev-page" type="button">上一页</button>
+        <button id="next-page" type="button">下一页</button>
+      </div>
     </div>
     <div class="table-wrap">
       <table>
@@ -294,45 +337,144 @@ def render_question_matrix_html(data):
             <th>选项内容</th>
           </tr>
         </thead>
-        <tbody id="matrix-body">
-          {body_rows}
-        </tbody>
+        <tbody id="matrix-body"></tbody>
       </table>
       <div id="empty" class="empty" hidden>没有匹配记录</div>
     </div>
   </main>
+  <script id="matrix-data" type="application/json">{matrix_rows_json}</script>
   <script>
-    const rows = Array.from(document.querySelectorAll("#matrix-body tr"));
+    const allRows = JSON.parse(document.getElementById("matrix-data").textContent || "[]");
+    let filteredRows = allRows;
+    let currentPage = 1;
+    let filterTimer = null;
+
+    function rowSearchText(row) {{
+      if (row._searchText !== undefined) return row._searchText;
+      row._searchText = [
+        row.timestamp,
+        row.data_version,
+        row.model,
+        row.sampling_strategy,
+        row.note,
+        row.question_type,
+        row.answer_type,
+        row.question,
+        row.natural_prediction,
+        row.restricted_prediction,
+        row.ground_truth,
+        row.options
+      ].map((value) => String(value ?? "")).join("\\n").toLowerCase()
+      return row._searchText;
+    }}
+
+    const matrixBody = document.getElementById("matrix-body");
     const search = document.getElementById("search");
     const dataVersionFilter = document.getElementById("data-version-filter");
     const modelFilter = document.getElementById("model-filter");
     const samplingFilter = document.getElementById("sampling-filter");
+    const pageSize = document.getElementById("page-size");
+    const pageInfo = document.getElementById("page-info");
+    const prevPage = document.getElementById("prev-page");
+    const nextPage = document.getElementById("next-page");
     const visibleCount = document.getElementById("visible-count");
     const empty = document.getElementById("empty");
+
+    function html(value) {{
+      return String(value ?? "").replace(/[&<>"']/g, (char) => ({{
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;"
+      }}[char]));
+    }}
+
+    function scoreText(row) {{
+      return row.score === null || row.score === undefined || row.score === "" ? "" : Number(row.score).toFixed(2);
+    }}
+
+    function status(row) {{
+      if (row.is_correct === true) return ["正确", "ok"];
+      if (row.is_correct === false) return ["错误", "bad"];
+      if (row.is_scored === true) return ["有得分", "ok"];
+      if (row.is_scored === false) return ["无得分", "bad"];
+      return ["", ""];
+    }}
+
+    function renderRow(row) {{
+      const [statusText, statusClass] = status(row);
+      return `<tr>
+  <td class="nowrap">${{html(row.timestamp)}}</td>
+  <td class="nowrap">${{html(row.data_version || "default")}}</td>
+  <td class="nowrap">${{html(row.model)}}</td>
+  <td class="nowrap">${{html(row.sampling_strategy)}}</td>
+  <td class="text">${{html(row.note)}}</td>
+  <td>${{html(row.question_type)}}</td>
+  <td class="nowrap">${{html(row.answer_type)}}</td>
+  <td class="nowrap"><span class="status ${{statusClass}}">${{html(statusText)}}</span></td>
+  <td class="nowrap score">${{html(scoreText(row))}}</td>
+  <td class="text">${{html(row.question)}}</td>
+  <td class="text">${{html(row.natural_prediction)}}</td>
+  <td class="text">${{html(row.restricted_prediction)}}</td>
+  <td class="text">${{html(row.ground_truth)}}</td>
+  <td class="text">${{html(row.options)}}</td>
+</tr>`;
+    }}
 
     function applyFilters() {{
       const keyword = search.value.trim().toLowerCase();
       const dataVersion = dataVersionFilter.value;
       const model = modelFilter.value;
       const sampling = samplingFilter.value;
-      let shown = 0;
-      rows.forEach((row) => {{
-        const matchesDataVersion = !dataVersion || row.dataset.dataVersion === dataVersion;
-        const matchesModel = !model || row.dataset.model === model;
-        const matchesSampling = !sampling || row.dataset.sampling === sampling;
-        const matchesKeyword = !keyword || row.textContent.toLowerCase().includes(keyword);
-        const visible = matchesDataVersion && matchesModel && matchesSampling && matchesKeyword;
-        row.hidden = !visible;
-        if (visible) shown += 1;
+      filteredRows = allRows.filter((row) => {{
+        const matchesDataVersion = !dataVersion || row.data_version === dataVersion;
+        const matchesModel = !model || row.model === model;
+        const matchesSampling = !sampling || row.sampling_strategy === sampling;
+        const matchesKeyword = !keyword || rowSearchText(row).includes(keyword);
+        return matchesDataVersion && matchesModel && matchesSampling && matchesKeyword;
       }});
-      visibleCount.textContent = shown;
-      empty.hidden = shown !== 0;
+      currentPage = 1;
+      renderPage();
     }}
 
-    search.addEventListener("input", applyFilters);
+    function renderPage() {{
+      const perPage = Number(pageSize.value) || 100;
+      const total = filteredRows.length;
+      const totalPages = Math.max(1, Math.ceil(total / perPage));
+      currentPage = Math.min(Math.max(currentPage, 1), totalPages);
+      const start = (currentPage - 1) * perPage;
+      const pageRows = filteredRows.slice(start, start + perPage);
+      matrixBody.innerHTML = pageRows.map(renderRow).join("");
+      visibleCount.textContent = total;
+      pageInfo.textContent = total ? `${{start + 1}}-${{Math.min(start + perPage, total)}} / ${{total}}` : "0 / 0";
+      prevPage.disabled = currentPage <= 1;
+      nextPage.disabled = currentPage >= totalPages;
+      empty.hidden = total !== 0;
+    }}
+
+    function scheduleFilters() {{
+      clearTimeout(filterTimer);
+      filterTimer = setTimeout(applyFilters, 120);
+    }}
+
+    search.addEventListener("input", scheduleFilters);
     dataVersionFilter.addEventListener("change", applyFilters);
     modelFilter.addEventListener("change", applyFilters);
     samplingFilter.addEventListener("change", applyFilters);
+    pageSize.addEventListener("change", () => {{
+      currentPage = 1;
+      renderPage();
+    }});
+    prevPage.addEventListener("click", () => {{
+      currentPage -= 1;
+      renderPage();
+    }});
+    nextPage.addEventListener("click", () => {{
+      currentPage += 1;
+      renderPage();
+    }});
+    renderPage();
   </script>
 </body>
 </html>
@@ -383,6 +525,10 @@ def _cell(value):
 
 def _attr(value):
     return html.escape("" if value is None else str(value), quote=True)
+
+
+def _json_for_script(value):
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":")).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
 
 
 def _read_matrix_data(data_path):

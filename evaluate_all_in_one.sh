@@ -26,7 +26,8 @@ cuda_visible_devices="${CUDA_VISIBLE_DEVICES:-0}"
 answer_mode="restricted"
 gen_kwargs=""
 use_gen_kwargs=false
-natural_gen_kwargs="max_new_tokens=256,temperature=0,top_p=1.0,num_beams=1,do_sample=false"
+natural_max_new_tokens="${VSI_NATURAL_MAX_NEW_TOKENS:-4096}"
+natural_gen_kwargs=""
 run_note=""
 data_version="${VSI_DATA_VERSION:-default}"
 
@@ -96,6 +97,10 @@ while [[ $# -gt 0 ]]; do
         answer_mode="$2"
         shift 2
         ;;
+    --natural_max_new_tokens)
+        natural_max_new_tokens="$2"
+        shift 2
+        ;;
     --gen_kwargs)
         gen_kwargs="$2"
         use_gen_kwargs=true
@@ -134,8 +139,16 @@ case "$answer_mode" in
     ;;
 esac
 
+if [ "$answer_mode" = "natural" ] && [ "$use_gen_kwargs" = false ] && ! [[ "$natural_max_new_tokens" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Unsupported --natural_max_new_tokens: $natural_max_new_tokens (expected: a positive integer)"
+    exit 1
+fi
+
+natural_gen_kwargs="max_new_tokens=$natural_max_new_tokens,temperature=0,top_p=1.0,num_beams=1,do_sample=false"
+
 export VSI_VISUAL_INPUT_MODE="$visual_input_mode"
 export VSI_ANSWER_MODE="$answer_mode"
+export VSI_NATURAL_MAX_NEW_TOKENS="$natural_max_new_tokens"
 export VSI_RUN_NOTE="$run_note"
 export VSI_DATA_VERSION="$data_version"
 requested_num_processes="$num_processes"
