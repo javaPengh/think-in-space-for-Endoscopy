@@ -145,6 +145,9 @@ class Qwen3VL(lmms):
         self.token_usage_path = str(Path(__file__).resolve().parents[2] / "docs" / self.TOKEN_USAGE_FILENAME)
         self._last_aggregated_token_usage = None
         self._reset_token_usage()
+        self.debug_prompt_dir = os.getenv("VSI_DEBUG_PROMPT_DIR")
+        self.debug_prompt_limit = int(os.getenv("VSI_DEBUG_PROMPT_LIMIT", "5")) if self.debug_prompt_dir else 0
+        self._debug_prompt_count = 0
 
     @property
     def config(self):
@@ -436,8 +439,29 @@ class Qwen3VL(lmms):
 
         return frame_paths
 
-    def _generate_from_messages(self, messages, gen_kwargs, media_type):
+    def _debug_dump_prompt(self, messages, rendered_text, gen_kwargs, media_type, metadata):
+        if not self.debug_prompt_dir or self._debug_prompt_count >= self.debug_prompt_limit:
+            return
+        self._debug_prompt_count += 1
+        debug_dir = Path(self.debug_prompt_dir).expanduser()
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        safe_task = re.sub(r"[^A-Za-z0-9_.-]+", "_", str((metadata or {}).get("task", "task")))
+        safe_doc_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", str((metadata or {}).get("doc_id", self._debug_prompt_count)))
+        path = debug_dir / f"{self.TOKEN_USAGE_MODEL_NAME}_rank{self.rank}_{safe_task}_{safe_doc_id}.json"
+        payload = {
+            "model": self.TOKEN_USAGE_MODEL_NAME,
+            "rank": self.rank,
+            "media_type": media_type,
+            "metadata": metadata or {},
+            "generation_kwargs": gen_kwargs,
+            "messages": messages,
+            "rendered_chat_template": rendered_text,
+        }
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _generate_from_messages(self, messages, gen_kwargs, media_type, debug_metadata=None):
         text = self._processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        self._debug_dump_prompt(messages, text, gen_kwargs, media_type, debug_metadata)
         image_inputs, video_inputs = process_vision_info(messages)
         processor_kwargs = {"text": [text], "padding": True, "return_tensors": "pt"}
         if image_inputs:
@@ -491,7 +515,7 @@ class Qwen3VL(lmms):
                         ],
                     }
                 ]
-                output_text = self._generate_from_messages(messages, gen_kwargs, media_type)
+                output_text = self._generate_from_messages(messages, gen_kwargs, media_type, {"task": task, "split": split, "doc_id": doc_id})
             elif media_type == "image":
                 unique_image_name = os.path.join(*str(media_path).split(os.sep)[-3:])
                 pbar.set_postfix_str(f"Image: {unique_image_name}")
@@ -510,7 +534,7 @@ class Qwen3VL(lmms):
                         ],
                     }
                 ]
-                output_text = self._generate_from_messages(messages, gen_kwargs, media_type)
+                output_text = self._generate_from_messages(messages, gen_kwargs, media_type, {"task": task, "split": split, "doc_id": doc_id})
             elif media_type == "video":
                 if self.sample_frames_version is None:
                     self._determine_sample_frames_version()
@@ -560,7 +584,7 @@ class Qwen3VL(lmms):
                     }
                 ]
 
-                output_text = self._generate_from_messages(messages, gen_kwargs, media_type)
+                output_text = self._generate_from_messages(messages, gen_kwargs, media_type, {"task": task, "split": split, "doc_id": doc_id})
             else:
                 raise NotImplementedError
             res.append(output_text)

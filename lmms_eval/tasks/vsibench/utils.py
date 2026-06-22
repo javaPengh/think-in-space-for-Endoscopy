@@ -316,10 +316,12 @@ def _normalize_option_text(text):
     return re.sub(r"\s+", " ", str(text or "").strip().lower())
 
 
-def _extract_choice_prediction(pred, doc):
+def _extract_choice_prediction(pred, doc, require_final_answer=False):
     raw_text = str(pred or "").strip()
     final_answer = _extract_final_answer_text(raw_text)
-    candidates = [candidate for candidate in [final_answer, raw_text] if candidate]
+    if require_final_answer and not final_answer:
+        return None
+    candidates = [candidate for candidate in ([final_answer] if require_final_answer else [final_answer, raw_text]) if candidate]
     option_map = _parse_option_map(doc)
     valid_labels = set(option_map.keys())
 
@@ -344,13 +346,18 @@ def _extract_choice_prediction(pred, doc):
             if normalized_option and len(normalized_option) > 1 and normalized_option in normalized_candidate:
                 return label
 
-    return fuzzy_matching(final_answer or raw_text).upper()
+    if final_answer or not require_final_answer:
+        return fuzzy_matching(final_answer or raw_text).upper()
+    return None
 
 
-def _extract_numeric_prediction(pred):
+def _extract_numeric_prediction(pred, require_final_answer=False):
     raw_text = str(pred or "").strip()
     final_answer = _extract_final_answer_text(raw_text)
-    for candidate in [final_answer, raw_text]:
+    if require_final_answer and not final_answer:
+        return None
+    candidates = [final_answer] if require_final_answer else [final_answer, raw_text]
+    for candidate in candidates:
         if not candidate:
             continue
         match = NUMBER_RE.search(candidate)
@@ -365,7 +372,7 @@ def vsibench_process_results(doc, results):
     doc['media_type'] = _doc_media_type(doc)
     doc['answer_type'] = _doc_answer_type(doc)
     if doc['answer_type'] == ANSWER_TYPE_MULTIPLE_CHOICE:
-        restricted_prediction = _extract_choice_prediction(raw_prediction, doc)
+        restricted_prediction = _extract_choice_prediction(raw_prediction, doc, require_final_answer=natural_answer_mode)
         doc['natural_prediction'] = raw_prediction if natural_answer_mode else ""
         doc['restricted_prediction'] = restricted_prediction
         doc['prediction'] = restricted_prediction
@@ -373,7 +380,7 @@ def vsibench_process_results(doc, results):
             doc[key] = eval(value)(doc['prediction'], doc['ground_truth'])
         doc["is_correct"] = bool(doc.get("accuracy", 0.0))
     elif doc['answer_type'] == ANSWER_TYPE_NUMERIC:
-        restricted_prediction = _extract_numeric_prediction(raw_prediction)
+        restricted_prediction = _extract_numeric_prediction(raw_prediction, require_final_answer=natural_answer_mode)
         doc['natural_prediction'] = raw_prediction if natural_answer_mode else ""
         doc['restricted_prediction'] = restricted_prediction
         doc['prediction'] = restricted_prediction if restricted_prediction is not None else ""
