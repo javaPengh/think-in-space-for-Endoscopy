@@ -38,6 +38,7 @@ class MedGemma27B(lmms):
     MODEL_DISPLAY_NAME = "MedGemma-27B-IT"
     TOKEN_USAGE_MODEL_NAME = "medgemma_27b"
     TOKEN_USAGE_FILENAME = "medgemma_27b_token_usage.jsonl"
+    DOWNLOAD_HINT = "Download google/medgemma-27b-it from ModelScope to this local path, or pass a local pretrained path."
 
     def __init__(
         self,
@@ -93,7 +94,7 @@ class MedGemma27B(lmms):
         self.local_files_only = self._to_bool(local_files_only)
         self.path = os.path.expanduser(pretrained or self.DEFAULT_PRETRAINED)
         if self.local_files_only and not os.path.exists(self.path):
-            raise FileNotFoundError(f"{self.MODEL_DISPLAY_NAME} checkpoint was not found at {self.path}. " "Download google/medgemma-27b-it from ModelScope to this local path, or pass a local pretrained path.")
+            raise FileNotFoundError(f"{self.MODEL_DISPLAY_NAME} checkpoint was not found at {self.path}. {self.DOWNLOAD_HINT}")
 
         self.torch_dtype = self._resolve_torch_dtype(torch_dtype)
         self.attn_implementation = None if attn_implementation in (None, "", "none", "None") else str(attn_implementation)

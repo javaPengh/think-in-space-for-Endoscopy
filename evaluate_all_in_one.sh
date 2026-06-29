@@ -32,7 +32,7 @@ natural_gen_kwargs=""
 run_note=""
 data_version="${VSI_DATA_VERSION:-default}"
 
-available_models="gemini_3_1_pro,gemini_3_1_flash_lite,gpt5_4,llava_one_vision_1_5_8b,llava_next_video_7b_qwen2,internvl3_5_2b,internvl3_5_8b,qwen3vl_8b,qwen3vl_32b,medmo_8b_next,lingshu_32b,medgemma_27b,colongpt,qwen2_5vl_72b_api,qwen3vl_235b_a22b_api,internvideo2_5_chat_8b"
+available_models="gemini_3_1_pro,gemini_3_1_flash_lite,gpt5_4,llava_one_vision_1_5_8b,llava_next_video_7b_qwen2,internvl3_5_2b,internvl3_5_8b,qwen3vl_8b,qwen3vl_32b,medmo_8b_next,lingshu_32b,medgemma_27b,huatuogpt_vision_34b,colongpt,qwen2_5vl_72b_api,qwen3vl_235b_a22b_api,internvideo2_5_chat_8b"
 IFS=',' read -r -a models <<<"$available_models"
 
 while [[ $# -gt 0 ]]; do
@@ -258,6 +258,12 @@ for model in "${models[@]}"; do
         model_family="medgemma_27b"
         model="medgemma_27b_${num_frames}f"
         model_args="pretrained=~/.cache/modelscope/hub/models/google/medgemma-27b-it,modality=video,max_frames_num=$num_frames,device_map=auto"
+        num_processes=1
+        ;;
+    "huatuogpt_vision_34b")
+        model_family="huatuogpt_vision_34b"
+        model="huatuogpt_vision_34b_${num_frames}f"
+        model_args="pretrained=~/.cache/modelscope/hub/models/FreedomIntelligence/HuatuoGPT-Vision-34B-hf,modality=video,max_frames_num=$num_frames,device_map=auto"
         num_processes=1
         ;;
     "colongpt")

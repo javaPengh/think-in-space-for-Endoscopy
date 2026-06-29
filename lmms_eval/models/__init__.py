@@ -21,6 +21,7 @@ AVAILABLE_MODELS = {
     "gemini3_1_pro": "Gemini3_1Pro",
     "gpt5_4": "GPT5_4",
     "gpt4v": "GPT4V",
+    "huatuogpt_vision_34b": "HuatuoGPTVision34B",
     "idefics2": "Idefics2",
     "instructblip": "InstructBLIP",
     "internvl": "InternVLChat",
