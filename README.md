@@ -197,6 +197,53 @@ docs/eval_question_matrix.html
 python tools/update_eval_question_matrix.py logs/YYYYMMDD/vsibench/path/to/vsibench.json
 ```
 
+## Prompt 调试
+
+`qwen3vl.py` 适配器支持通过环境变量把真实送入模型的 prompt 落盘，用于排查模型是否收到了正确的问题、视觉消息和 chat template。默认不开启，不设置 `VSI_DEBUG_PROMPT_DIR` 时不会写任何调试文件。
+
+调试文件是 JSON，包含：
+
+| 字段 | 含义 |
+| --- | --- |
+| `messages` | 调用 `processor.apply_chat_template` 前的结构化消息。 |
+| `rendered_chat_template` | 套用模型 chat template 后的完整文本。 |
+| `generation_kwargs` | 当前样本实际使用的生成参数。 |
+| `media_type` | 当前样本输入类型，例如 `image`、`video` 或 `text`。 |
+| `metadata` | `task`、`split`、`doc_id` 等定位信息。 |
+
+常用环境变量：
+
+| 环境变量 | 作用 |
+| --- | --- |
+| `VSI_DEBUG_PROMPT_DIR` | 调试 JSON 输出目录。设置后才会启用 prompt dump。 |
+| `VSI_DEBUG_PROMPT_LIMIT` | 最多输出多少条 prompt，默认 `5`。 |
+| `VSI_DEBUG_PROMPT_DOC_IDS` | 只输出指定 `doc_id`，多个 id 用英文逗号分隔，例如 `362,365,370`。 |
+
+一次性运行时开启：
+
+```bash
+VSI_DEBUG_PROMPT_DIR=docs/prompt_debug \
+VSI_DEBUG_PROMPT_DOC_IDS=362,365,370 \
+VSI_DEBUG_PROMPT_LIMIT=20 \
+bash evaluate_all_in_one.sh --model medmo_8b_next --answer_mode natural --limit 400
+```
+
+如果希望脚本默认允许外部开关控制，可以在 `evaluate_all_in_one.sh` 初始化区加入：
+
+```bash
+export VSI_DEBUG_PROMPT_DIR="${VSI_DEBUG_PROMPT_DIR:-}"
+export VSI_DEBUG_PROMPT_DOC_IDS="${VSI_DEBUG_PROMPT_DOC_IDS:-}"
+export VSI_DEBUG_PROMPT_LIMIT="${VSI_DEBUG_PROMPT_LIMIT:-5}"
+```
+
+这三行不会固定开启调试；含义是保留运行命令里传入的环境变量，如果没有传入就使用空值或默认值。若要固定开启，可以直接写：
+
+```bash
+export VSI_DEBUG_PROMPT_DIR=docs/prompt_debug
+```
+
+该功能目前只对继承 `lmms_eval/models/qwen3vl.py` 的本地模型适配器生效，包括 `qwen3vl`、`qwen3vl_32b`、`medmo_8b_next` 和 `lingshu_32b`。它不影响 API 模型，也不影响没有继承 `Qwen3VL` 的本地模型。
+
 ## 水平基线
 
 Dashboard 支持从 Excel 题库生成水平基线，并叠加到 `指标对比` 图表中。默认会尝试读取：

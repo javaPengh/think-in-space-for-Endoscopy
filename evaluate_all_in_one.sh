@@ -2,6 +2,7 @@
 
 set -e
 
+#export VSI_DEBUG_PROMPT_DIR=docs/medmo_8b_next_prompt_debug
 export DASHSCOPE_API_KEY="sk-68a39855d0ec4d8ea23999d4d5ccd306"
 export NCCL_P2P_DISABLE=1
 export NCCL_IB_DISABLE=1
