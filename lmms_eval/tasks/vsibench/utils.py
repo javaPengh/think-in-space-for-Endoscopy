@@ -327,17 +327,21 @@ def _extract_choice_prediction(pred, doc, require_final_answer=False):
 
     for candidate in candidates:
         candidate_text = candidate.strip()
+        line_candidates = [line.strip() for line in candidate_text.splitlines() if line.strip()]
+        direct_candidates = [candidate_text]
+        if line_candidates:
+            direct_candidates = [line_candidates[-1], line_candidates[0], candidate_text]
         patterns = [
-            r"(?:answer|option|choice|答案|选项)\s*(?:is|为|是)?\s*[:：]?\s*[\(\[]?([A-Za-z])[\)\].、:：]?",
+            r"(?:answer|option|choice|choose|select|selected|pick|picked|答案|选项)\s*(?:is|为|是)?\s*[:：]?\s*[\(\[]?([A-Za-z])[\)\].、:：]?",
             r"^[\s\(\[]*([A-Za-z])[\s\)\].、:：]*$",
             r"[\(\[]([A-Za-z])[\)\]]",
-            r"(?:^|[\s:：])([A-Za-z])(?:[\s\.,;:：\)\]]|$)",
         ]
-        for pattern in patterns:
-            for match in re.finditer(pattern, candidate_text, flags=re.IGNORECASE):
-                label = match.group(1).upper()
-                if label in valid_labels:
-                    return label
+        for direct_candidate in direct_candidates:
+            for pattern in patterns:
+                for match in re.finditer(pattern, direct_candidate, flags=re.IGNORECASE):
+                    label = match.group(1).upper()
+                    if label in valid_labels:
+                        return label
 
     for candidate in candidates:
         normalized_candidate = _normalize_option_text(candidate)
@@ -346,8 +350,9 @@ def _extract_choice_prediction(pred, doc, require_final_answer=False):
             if normalized_option and len(normalized_option) > 1 and normalized_option in normalized_candidate:
                 return label
 
-    if final_answer or not require_final_answer:
-        return fuzzy_matching(final_answer or raw_text).upper()
+    fallback_label = fuzzy_matching(final_answer or raw_text).upper()
+    if fallback_label in valid_labels:
+        return fallback_label
     return None
 
 
@@ -360,9 +365,19 @@ def _extract_numeric_prediction(pred, require_final_answer=False):
     for candidate in candidates:
         if not candidate:
             continue
-        match = NUMBER_RE.search(candidate)
-        if match:
-            return match.group(0)
+        answer_pattern = r"(?:answer|答案|结果)\s*(?:is|为|是)?\s*[:：]?\s*(" + NUMBER_RE.pattern + r")"
+        answer_match = re.search(answer_pattern, candidate, flags=re.IGNORECASE)
+        if answer_match:
+            return answer_match.group(1)
+
+        lines = [line.strip() for line in candidate.splitlines() if line.strip()]
+        direct_candidates = [candidate.strip()]
+        if lines:
+            direct_candidates = [lines[-1], lines[0], candidate.strip()]
+        for direct_candidate in direct_candidates:
+            numbers = NUMBER_RE.findall(direct_candidate)
+            if len(numbers) == 1 and len(direct_candidate) <= 80:
+                return numbers[0]
     return None
 
 

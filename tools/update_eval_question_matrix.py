@@ -74,9 +74,13 @@ def build_question_rows(sample_data, sample_path):
         natural_prediction = score_doc.get("natural_prediction")
         if natural_prediction is None:
             natural_prediction = _first_scalar(log.get("resps"))
+
         restricted_prediction = score_doc.get("restricted_prediction")
+        extraction_was_attempted = score_doc and ("restricted_prediction" in score_doc or "prediction" in score_doc)
         if restricted_prediction is None:
             restricted_prediction = score_doc.get("prediction")
+        if restricted_prediction is None and extraction_was_attempted:
+            restricted_prediction = "提取失败"
         if restricted_prediction is None:
             restricted_prediction = _first_scalar(log.get("filtered_resps"))
         row_id_seed = f"{sample_path_text}|{doc_id}"
