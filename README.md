@@ -56,6 +56,7 @@ README 后文提到的 `C:\Users\a2818\Desktop\QA\抽样测试.xlsx` 是用于�
 | 均匀采样 | `--num_frames N` | 从视频中均匀采样 N 帧，默认 `16` 帧。 |
 | 自己控制 fps 采样 | `--video_sample_fps F` | 本地按 F fps 抽帧后送给模型。 |
 | 指定关键帧采样 | `--video_sampling_strategy specific` | 使用 `data/keyframe_mapping.json` 中的关键帧。 |
+| 保存采样帧 | `--save_sample_frames true` | 默认不保存采样帧；开启后把本次评估实际抽取的帧写入 `sample_frames/`，用于核查抽帧结果。 |
 | 平台控制 fps 采样 | `--video_input_mode file --video_sample_fps F` | 仅 Qwen API 模型支持，上传本地视频文件，由 DashScope 按 fps 抽帧。 |
 | 盲测 | `--visual_input_mode none` | 不提供图片或视频，只把问题文本送给模型。 |
 | 自然输出 | `--answer_mode natural` | 允许模型自然语言解释，最后用 `Final answer: ...` 给可抽取答案。指标仍使用抽取后的受限答案计算。 |
@@ -100,6 +101,14 @@ bash evaluate_all_in_one.sh --model qwen3vl_8b --benchmark vsibench --num_proces
 ```bash
 bash evaluate_all_in_one.sh --model qwen3vl_8b --benchmark vsibench --num_processes 2 --video_sampling_strategy specific
 ```
+
+### 保存采样帧用于核查
+
+```bash
+bash evaluate_all_in_one.sh --model qwen3vl_8b --benchmark vsibench --num_processes 2 --num_frames 16 --save_sample_frames true
+```
+
+`--save_sample_frames` 默认关闭，正常评估不会写出采样帧，避免大量 JPG I/O 拖慢评估。传 `true`、`1` 或 `yes` 时会开启保存，采样帧会写入 `sample_frames/{model}-{sampling}/...` 目录；关闭时可传 `false`、`0` 或 `no`。该开关只影响是否额外落盘核查帧，不改变抽帧策略本身。
 
 ### Qwen API 上传视频并由平台按 1fps 采样
 

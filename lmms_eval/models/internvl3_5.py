@@ -10,6 +10,7 @@ from accelerate import Accelerator, DistributedType
 from accelerate.state import AcceleratorState
 from accelerate.utils import InitProcessGroupKwargs
 from decord import VideoReader, cpu
+from loguru import logger as eval_logger
 from PIL import Image
 from torchvision.transforms.functional import InterpolationMode
 from tqdm import tqdm
@@ -20,7 +21,6 @@ from lmms_eval.api.model import lmms
 from lmms_eval.api.registry import register_model
 from lmms_eval.models.model_utils.blind_eval import is_blind_mode, normalize_visual_input_mode, strip_visual_context
 from lmms_eval.models.model_utils.question_id import get_question_key
-from loguru import logger as eval_logger
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
@@ -67,18 +67,10 @@ def dynamic_preprocess(image, min_num=1, max_num=6, image_size=448, use_thumbnai
     orig_width, orig_height = image.size
     aspect_ratio = orig_width / orig_height
 
-    target_ratios = set(
-        (i, j)
-        for n in range(min_num, max_num + 1)
-        for i in range(1, n + 1)
-        for j in range(1, n + 1)
-        if i * j <= max_num and i * j >= min_num
-    )
+    target_ratios = set((i, j) for n in range(min_num, max_num + 1) for i in range(1, n + 1) for j in range(1, n + 1) if i * j <= max_num and i * j >= min_num)
     target_ratios = sorted(target_ratios, key=lambda x: x[0] * x[1])
 
-    target_aspect_ratio = find_closest_aspect_ratio(
-        aspect_ratio, target_ratios, orig_width, orig_height, image_size
-    )
+    target_aspect_ratio = find_closest_aspect_ratio(aspect_ratio, target_ratios, orig_width, orig_height, image_size)
 
     target_width = image_size * target_aspect_ratio[0]
     target_height = image_size * target_aspect_ratio[1]
@@ -106,9 +98,7 @@ def load_image(image, input_size=448, max_num=6):
         with Image.open(image) as raw_image:
             image = raw_image.convert("RGB")
     transform = build_transform(input_size=input_size)
-    images = dynamic_preprocess(
-        image, image_size=input_size, use_thumbnail=True, max_num=max_num
-    )
+    images = dynamic_preprocess(image, image_size=input_size, use_thumbnail=True, max_num=max_num)
     pixel_values = [transform(img) for img in images]
     return torch.stack(pixel_values)
 
@@ -137,6 +127,7 @@ def load_video(
     keyframe_mapping=None,
     question_key=None,
     task=None,
+    save_sample_frames=False,
 ):
     vr = VideoReader(video_path, ctx=cpu(0))
     max_frame = len(vr) - 1
@@ -144,7 +135,7 @@ def load_video(
 
     pixel_values_list, num_patches_list = [], []
     transform = build_transform(input_size=input_size)
-    
+
     if video_sampling_strategy == "specific":
         found_indices = None
         if keyframe_mapping and question_key is not None:
@@ -158,47 +149,44 @@ def load_video(
     else:
         frame_indices = get_index(bound, fps, max_frame, first_idx=0, num_segments=num_segments)
 
-    # ====== 新增：持久化保存采样帧用于分析 ======
-    import os
-    from pathlib import Path
-    import cv2
-    import re
-    
-    # 构建保存目录: sample_frames/{model_name}-{num_segments}f/v_{xx}
-    base_model_dir = os.path.join("sample_frames", f"{model_name}-{num_segments}f")
-    
-    # 如果没有显式传入 version_dir，则回退到原来的环境变量查找逻辑作为兼容
-    if version_dir is None:
-        env_key = f"SAMPLE_FRAMES_VERSION_{model_name}_{num_segments}"
-        if env_key not in os.environ:
-            os.makedirs(base_model_dir, exist_ok=True)
-            existing_versions = []
-            for d in os.listdir(base_model_dir):
-                if os.path.isdir(os.path.join(base_model_dir, d)) and re.match(r"^v_\d+$", d):
-                    existing_versions.append(int(d.split("_")[1]))
-            
-            next_version = max(existing_versions) + 1 if existing_versions else 1
-            os.environ[env_key] = f"v_{next_version:02d}"
-            
-        version_dir = os.environ[env_key]
-        
-    base_save_dir = os.path.join(base_model_dir, version_dir)
-    os.makedirs(base_save_dir, exist_ok=True)
-    video_stem = Path(video_path).stem
-    # ============================================
+    if save_sample_frames:
+        import os
+        import re
+        from pathlib import Path
+
+        import cv2
+
+        base_model_dir = os.path.join("sample_frames", f"{model_name}-{num_segments}f")
+
+        if version_dir is None:
+            env_key = f"SAMPLE_FRAMES_VERSION_{model_name}_{num_segments}"
+            if env_key not in os.environ:
+                os.makedirs(base_model_dir, exist_ok=True)
+                existing_versions = []
+                for d in os.listdir(base_model_dir):
+                    if os.path.isdir(os.path.join(base_model_dir, d)) and re.match(r"^v_\d+$", d):
+                        existing_versions.append(int(d.split("_")[1]))
+
+                next_version = max(existing_versions) + 1 if existing_versions else 1
+                os.environ[env_key] = f"v_{next_version:02d}"
+
+            version_dir = os.environ[env_key]
+
+        base_save_dir = os.path.join(base_model_dir, version_dir)
+        os.makedirs(base_save_dir, exist_ok=True)
+        video_stem = Path(video_path).stem
 
     for frame_index in frame_indices:
         frame_np = vr[frame_index].asnumpy()
-        
-        # 保存当前帧为图像
-        try:
-            frame_file = f"{video_stem}_frame{frame_index:04d}.jpg"
-            save_path = os.path.join(base_save_dir, frame_file)
-            # frame_np 是 RGB 格式，cv2 需要 BGR
-            cv2.imwrite(save_path, cv2.cvtColor(frame_np, cv2.COLOR_RGB2BGR))
-        except Exception as e:
-            eval_logger.warning(f"Failed to save sampled frame {frame_index}: {e}")
-            
+
+        if save_sample_frames:
+            try:
+                frame_file = f"{video_stem}_frame{frame_index:04d}.jpg"
+                save_path = os.path.join(base_save_dir, frame_file)
+                cv2.imwrite(save_path, cv2.cvtColor(frame_np, cv2.COLOR_RGB2BGR))
+            except Exception as e:
+                eval_logger.warning(f"Failed to save sampled frame {frame_index}: {e}")
+
         img = Image.fromarray(frame_np).convert("RGB")
         tiles = dynamic_preprocess(img, image_size=input_size, use_thumbnail=True, max_num=max_num)
         pixel_values = [transform(tile) for tile in tiles]
@@ -224,10 +212,12 @@ class InternVL3_5(lmms):
         video_sampling_strategy: str = "uniform",
         keyframe_mapping_path: str = "data/keyframe_mapping.json",
         visual_input_mode: str = "visual",
+        save_sample_frames: bool = False,
         **kwargs,
     ):
         super().__init__()
         self.visual_input_mode = normalize_visual_input_mode(visual_input_mode)
+        self.save_sample_frames = str(save_sample_frames).strip().lower() not in {"0", "false", "no", "none", ""}
         self.path = pretrained
         self.modality = modality
         self.max_frames_num = max_frames_num
@@ -239,13 +229,15 @@ class InternVL3_5(lmms):
         self.keyframe_mapping = {}
         if self.video_sampling_strategy == "specific" and not is_blind_mode(self.visual_input_mode):
             import os
+
             if not os.path.exists(keyframe_mapping_path):
                 raise ValueError(f"Keyframe mapping file not found at {keyframe_mapping_path}. Required when video_sampling_strategy is 'specific'.")
             import json
+
             with open(keyframe_mapping_path, "r", encoding="utf-8") as f:
                 self.keyframe_mapping = json.load(f)
 
-        if device_map == 'auto':
+        if device_map == "auto":
             self._model = AutoModel.from_pretrained(
                 self.path,
                 torch_dtype=torch.bfloat16,
@@ -254,17 +246,22 @@ class InternVL3_5(lmms):
                 device_map=device_map,
             ).eval()
             try:
-                from accelerate.hooks import add_hook_to_module, AlignDevicesHook
+                from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+
                 add_hook_to_module(self._model.language_model.lm_head, AlignDevicesHook(execution_device=self._model.language_model.model.embed_tokens.weight.device))
             except Exception as e:
                 eval_logger.debug(f"Could not add accelerate hook for internvl3.5: {e}")
         else:
-            self._model = AutoModel.from_pretrained(
-                self.path,
-                torch_dtype=torch.bfloat16,
-                low_cpu_mem_usage=True,
-                trust_remote_code=True,
-            ).eval().cuda()
+            self._model = (
+                AutoModel.from_pretrained(
+                    self.path,
+                    torch_dtype=torch.bfloat16,
+                    low_cpu_mem_usage=True,
+                    trust_remote_code=True,
+                )
+                .eval()
+                .cuda()
+            )
 
         self._config = AutoConfig.from_pretrained(self.path, trust_remote_code=True)
 
@@ -301,9 +298,7 @@ class InternVL3_5(lmms):
                     "train_micro_batch_size_per_gpu": self.batch_size_per_gpu,
                     "train_batch_size": self.batch_size_per_gpu * accelerator.num_processes,
                 }
-                AcceleratorState().deepspeed_plugin.deepspeed_config_process(
-                    must_match=True, **kwargs
-                )
+                AcceleratorState().deepspeed_plugin.deepspeed_config_process(must_match=True, **kwargs)
 
             if accelerator.distributed_type in [DistributedType.FSDP, DistributedType.DEEPSPEED]:
                 self._model = accelerator.prepare(self.model)
@@ -313,9 +308,7 @@ class InternVL3_5(lmms):
             self._rank = accelerator.local_process_index
             self._world_size = accelerator.num_processes
         elif accelerator.num_processes == 1 and device_map == "auto":
-            eval_logger.info(
-                f"Using {accelerator.num_processes} process with model parallel device_map."
-            )
+            eval_logger.info(f"Using {accelerator.num_processes} process with model parallel device_map.")
             self._rank = 0
             self._world_size = 1
         else:
@@ -400,6 +393,7 @@ class InternVL3_5(lmms):
         # 分布式安全地确定 sample_frames 的版本目录 (仅执行一次)
         import os
         import re
+
         import torch.distributed as dist
 
         if self.sample_frames_version is not None:
@@ -435,9 +429,7 @@ class InternVL3_5(lmms):
         res = []
         pbar = tqdm(total=len(requests), disable=(self.rank != 0), desc="Model Responding")
 
-        for idx, (contexts, gen_kwargs, doc_to_visual, doc_id, task, split) in enumerate(
-            [reg.args for reg in requests]
-        ):
+        for idx, (contexts, gen_kwargs, doc_to_visual, doc_id, task, split) in enumerate([reg.args for reg in requests]):
             if "until" in gen_kwargs:
                 gen_kwargs.pop("until")
 
@@ -476,16 +468,16 @@ class InternVL3_5(lmms):
                     )
 
                 elif media_type == "video":
-                    if self.sample_frames_version is None:
+                    if self.save_sample_frames and self.sample_frames_version is None:
                         self._determine_sample_frames_version()
                     assert len(visuals) == 1, f"Only one video is supported, got {len(visuals)}."
                     video_path = visuals[0]
-                    
+
                     # 提取模型名称用于建立对应目录，例如从 "OpenGVLab/InternVL-3.5-2B" 中提取 "InternVL-3.5-2B"
                     extracted_model_name = self.path.split("/")[-1] if "/" in self.path else self.path
-                    
+
                     question_key = get_question_key(self.task_dict[task][split][doc_id], doc_id)
-                    
+
                     pixel_values, num_patches_list = load_video(
                         video_path,
                         num_segments=self.max_frames_num,
@@ -496,11 +488,10 @@ class InternVL3_5(lmms):
                         keyframe_mapping=self.keyframe_mapping,
                         question_key=question_key,
                         task=task,
+                        save_sample_frames=self.save_sample_frames,
                     )
                     pixel_values = self._cast_and_move_pixels(pixel_values)
-                    video_prefix = "".join(
-                        [f"Frame{i+1}: <image>\n" for i in range(len(num_patches_list))]
-                    )
+                    video_prefix = "".join([f"Frame{i+1}: <image>\n" for i in range(len(num_patches_list))])
                     question = video_prefix + contexts
 
                     response, _ = self.model.chat(

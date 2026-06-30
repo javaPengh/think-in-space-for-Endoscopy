@@ -23,11 +23,12 @@ video_sample_fps=""
 video_input_mode=""
 video_max_num=""
 visual_input_mode="visual"
+save_sample_frames="false"
 cuda_visible_devices="${CUDA_VISIBLE_DEVICES:-0}"
 answer_mode="restricted"
 gen_kwargs=""
 use_gen_kwargs=false
-natural_max_new_tokens="${VSI_NATURAL_MAX_NEW_TOKENS:-4096}"
+natural_max_new_tokens="${VSI_NATURAL_MAX_NEW_TOKENS:-2048}"
 natural_gen_kwargs=""
 run_note=""
 data_version="${VSI_DATA_VERSION:-default}"
@@ -90,6 +91,10 @@ while [[ $# -gt 0 ]]; do
         visual_input_mode="$2"
         shift 2
         ;;
+    --save_sample_frames)
+        save_sample_frames="$2"
+        shift 2
+        ;;
     --cuda_visible_devices)
         cuda_visible_devices="$2"
         shift 2
@@ -127,6 +132,19 @@ case "$visual_input_mode" in
     ;;
 *)
     echo "Unsupported --visual_input_mode: $visual_input_mode (expected: visual or none)"
+    exit 1
+    ;;
+esac
+
+case "${save_sample_frames,,}" in
+"true"|"1"|"yes")
+    save_sample_frames="true"
+    ;;
+"false"|"0"|"no"|"none"|"")
+    save_sample_frames="false"
+    ;;
+*)
+    echo "Unsupported --save_sample_frames: $save_sample_frames (expected: true or false)"
     exit 1
     ;;
 esac
@@ -330,6 +348,18 @@ for model in "${models[@]}"; do
                 ;;
             esac
         fi
+    fi
+
+    if [ "$save_sample_frames" = "true" ]; then
+        case "$model_family" in
+        "llava_onevision_1_5"|"internvl3_5"|"qwen3vl"|"qwen3vl_32b"|"medgemma_27b"|"huatuogpt_vision_34b"|"internvideo2_5_chat_8b")
+            model_args="$model_args,save_sample_frames=true"
+            model="${model}_saveframes"
+            ;;
+        *)
+            echo "Warning: --save_sample_frames is not supported by $model_family; ignoring"
+            ;;
+        esac
     fi
 
     if [ "$answer_mode" = "natural" ]; then

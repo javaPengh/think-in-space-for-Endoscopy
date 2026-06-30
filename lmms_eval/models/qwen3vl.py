@@ -1,18 +1,21 @@
+import gc
+import json
 import logging
 import os
-import json
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Tuple
-from qwen_vl_utils import process_vision_info
+
 import torch
-import gc
-import re
+import transformers
 from accelerate import Accelerator, DistributedType
 from accelerate.state import AcceleratorState
 from accelerate.utils import InitProcessGroupKwargs
+from loguru import logger as eval_logger
+from PIL import Image
+from qwen_vl_utils import process_vision_info
 from tqdm import tqdm
-import transformers
 from transformers import AutoProcessor
 
 from lmms_eval.api.instance import Instance
@@ -20,7 +23,6 @@ from lmms_eval.api.model import lmms
 from lmms_eval.api.registry import register_model
 from lmms_eval.models.model_utils.blind_eval import is_blind_mode, normalize_visual_input_mode, strip_visual_context
 from lmms_eval.models.model_utils.question_id import get_question_key
-from loguru import logger as eval_logger
 
 DEFAULT_GEN_KWARGS = dict(
     max_new_tokens=1024,
@@ -52,11 +54,13 @@ class Qwen3VL(lmms):
         video_sample_fps: float = None,
         keyframe_mapping_path: str = "data/keyframe_mapping.json",
         visual_input_mode: str = "visual",
+        save_sample_frames: bool = False,
         **kwargs,
     ):
         super().__init__()
 
         self.visual_input_mode = normalize_visual_input_mode(visual_input_mode)
+        self.save_sample_frames = str(save_sample_frames).strip().lower() not in {"0", "false", "no", "none", ""}
         self.max_frames_num = int(max_frames_num)
         self.video_sample_fps = None if video_sample_fps in (None, "", "none", "None") else float(video_sample_fps)
         self.video_sampling_strategy = str(video_sampling_strategy).lower()
@@ -75,6 +79,7 @@ class Qwen3VL(lmms):
             if not os.path.exists(keyframe_mapping_path):
                 raise ValueError(f"Keyframe mapping file not found at {keyframe_mapping_path}. Required when video_sampling_strategy is 'specific'.")
             import json
+
             with open(keyframe_mapping_path, "r", encoding="utf-8") as f:
                 self.keyframe_mapping = json.load(f)
 
@@ -179,11 +184,7 @@ class Qwen3VL(lmms):
     def _resolve_model_class(self):
         model_class = getattr(transformers, self.MODEL_CLASS_NAME, None)
         if model_class is None:
-            raise ImportError(
-                f"{self.MODEL_DISPLAY_NAME} requires a Transformers version that provides "
-                f"{self.MODEL_CLASS_NAME}. Install or switch to a compatible Transformers release "
-                f"before using this model adapter."
-            )
+            raise ImportError(f"{self.MODEL_DISPLAY_NAME} requires a Transformers version that provides " f"{self.MODEL_CLASS_NAME}. Install or switch to a compatible Transformers release " f"before using this model adapter.")
         return model_class
 
     def flatten(self, input):
@@ -196,6 +197,7 @@ class Qwen3VL(lmms):
     def _determine_sample_frames_version(self):
         # 分布式安全地确定本次评估的 sample_frames 时间戳目录 (仅执行一次)
         import os
+
         import torch.distributed as dist
 
         if self.sample_frames_version is not None:
@@ -406,6 +408,7 @@ class Qwen3VL(lmms):
 
     def _save_sampled_frames(self, frames, frame_indices, video_path, task, split, doc_id):
         from pathlib import Path
+
         from PIL import Image
 
         extracted_model_name = self.path.split("/")[-1] if "/" in self.path else self.path
@@ -457,7 +460,7 @@ class Qwen3VL(lmms):
             "messages": messages,
             "rendered_chat_template": rendered_text,
         }
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
 
     def _generate_from_messages(self, messages, gen_kwargs, media_type, debug_metadata=None):
         text = self._processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -536,7 +539,7 @@ class Qwen3VL(lmms):
                 ]
                 output_text = self._generate_from_messages(messages, gen_kwargs, media_type, {"task": task, "split": split, "doc_id": doc_id})
             elif media_type == "video":
-                if self.sample_frames_version is None:
+                if self.save_sample_frames and self.sample_frames_version is None:
                     self._determine_sample_frames_version()
                 video_path = str(media_path)
                 # ====== 新增：提取唯一视频名称用于日志核查 ======
@@ -550,28 +553,24 @@ class Qwen3VL(lmms):
                 # 为了不依赖 qwen_vl_utils 底层的黑盒抽帧，确保采样策略由评估协议显式控制。
                 # 尤其针对医学视频评估中时序连贯性的严谨要求，这里显式使用 decord 进行抽取
                 import decord
+
                 decord.bridge.set_bridge("torch")
                 vr = decord.VideoReader(video_path, num_threads=1)
                 total_frames = len(vr)
                 frame_indices = self._sample_frame_indices(vr, total_frames, doc_id, task, split)
-                
-                # 不依赖底层对于 `video` 路径的处理。我们将严格依据索引拉取图像矩阵并转存传递。
+
+                # 不依赖底层对于 `video` 路径的处理。我们将严格依据索引拉取图像矩阵并传递。
                 frames = vr.get_batch(frame_indices).numpy()
                 del vr  # 释放内存与文件句柄
 
-                # 将截取的帧存成特定格式交给官方组件解析。Qwen 的 qwen_vl_utils 支持 
-                # {"type": "video", "video": [ "path/to/frame1.jpg", "path/to/frame2.jpg", ... ]}
-                # 这样它就会将这些帧组装为连续时序视频而不再去利用 cv2/av 等库对单一视频文件盲目抽帧
-                
-                # 每个样本使用独立目录并原子替换 jpg，避免多进程/多题复用同一视频时读到半写入文件。
-                frame_paths = self._save_sampled_frames(frames, frame_indices, video_path, task, split, doc_id)
-                
+                if self.save_sample_frames:
+                    # 每个样本使用独立目录并原子替换 jpg，避免多进程/多题复用同一视频时读到半写入文件。
+                    video_frames = self._save_sampled_frames(frames, frame_indices, video_path, task, split, doc_id)
+                else:
+                    video_frames = [Image.fromarray(frame).convert("RGB") for frame in frames]
+
                 # 这种传法彻底锁死了视频内容为我们手动截取的帧数
-                video_content = {
-                    "type": "video",
-                    "video": frame_paths,
-                    "fps": 1.0 # 这里的 fps 在列表模式下仅用于控制底层时间戳计算(如每秒1帧)，对截断无影响
-                }
+                video_content = {"type": "video", "video": video_frames, "fps": 1.0}  # 这里的 fps 在列表模式下仅用于控制底层时间戳计算(如每秒1帧)，对截断无影响
                 if self.max_pixels is not None:
                     video_content["max_pixels"] = self.max_pixels
                 messages = [

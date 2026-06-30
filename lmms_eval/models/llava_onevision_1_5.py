@@ -77,6 +77,7 @@ class Llava_OneVision_1_5(lmms):
         keyframe_mapping_path: str = "data/keyframe_mapping.json",
         processor_use_fast: Optional[bool] = False,
         visual_input_mode: str = "visual",
+        save_sample_frames: bool = False,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -88,6 +89,7 @@ class Llava_OneVision_1_5(lmms):
         assert kwargs == {}, f"Unexpected kwargs: {kwargs}"
 
         self.visual_input_mode = normalize_visual_input_mode(visual_input_mode)
+        self.save_sample_frames = str(save_sample_frames).strip().lower() not in {"0", "false", "no", "none", ""}
         self.video_sampling_strategy = video_sampling_strategy
         self.video_sample_fps = None if video_sample_fps in (None, "") else float(video_sample_fps)
         if not is_blind_mode(self.visual_input_mode):
@@ -99,6 +101,7 @@ class Llava_OneVision_1_5(lmms):
         self.sample_frames_version = None
         if self.video_sampling_strategy == "specific" and not is_blind_mode(self.visual_input_mode):
             import os
+
             if not os.path.exists(keyframe_mapping_path):
                 raise ValueError(f"Keyframe mapping file not found at {keyframe_mapping_path}. Required when video_sampling_strategy is 'specific'.")
             with open(keyframe_mapping_path, "r", encoding="utf-8") as f:
@@ -418,10 +421,7 @@ class Llava_OneVision_1_5(lmms):
             from flash_attn.flash_attn_interface import flash_attn_varlen_func
         except ImportError as e:
             if request_flash_attention:
-                raise ImportError(
-                    "LLaVA-OneVision-1.5 expects flash_attn_varlen_func. "
-                    "Install a compatible flash-attn build or disable flash_attention_2."
-                ) from e
+                raise ImportError("LLaVA-OneVision-1.5 expects flash_attn_varlen_func. " "Install a compatible flash-attn build or disable flash_attention_2.") from e
             modeling_flash_attention_utils.flash_attn_varlen_func = None
             return
 
@@ -488,11 +488,11 @@ class Llava_OneVision_1_5(lmms):
         else:
             vr = VideoReader(video_path[0], ctx=cpu(0))
             video_path = video_path[0]
-            
+
         total_frame_num = len(vr)
         if total_frame_num <= 0:
             raise ValueError(f"Video has no frames: {video_path}")
-        
+
         if self.video_sampling_strategy == "specific":
             found_indices = None
             if self.keyframe_mapping and question_key is not None:
@@ -532,48 +532,47 @@ class Llava_OneVision_1_5(lmms):
                 video_path,
             )
             self._logged_first_video_sample = True
-            
-        # ====== 新增：持久化保存采样帧用于分析 ======
-        import os
-        import cv2
-        import re
-        from pathlib import Path
-        
-        extracted_model_name = self.pretrained.split("/")[-1] if "/" in self.pretrained else self.pretrained
-        if self.video_sampling_strategy == "fps":
-            sampling_label = f"fps_{self.video_sample_fps:g}".replace(".", "p")
-        elif self.video_sampling_strategy == "specific":
-            sampling_label = "specific"
-        else:
-            sampling_label = f"{max_frames_num}f"
-        base_model_dir = os.path.join("sample_frames", f"{extracted_model_name}-{sampling_label}")
-        
-        if self.sample_frames_version is None:
-            env_key = f"SAMPLE_FRAMES_VERSION_{extracted_model_name}_{max_frames_num}"
-            if env_key not in os.environ:
-                os.makedirs(base_model_dir, exist_ok=True)
-                existing_versions = []
-                for d in os.listdir(base_model_dir):
-                    if os.path.isdir(os.path.join(base_model_dir, d)) and re.match(r"^v_\d+$", d):
-                        existing_versions.append(int(d.split("_")[1]))
-                next_version = max(existing_versions) + 1 if existing_versions else 1
-                os.environ[env_key] = f"v_{next_version:02d}"
-            self.sample_frames_version = os.environ[env_key]
-            
-        base_save_dir = os.path.join(base_model_dir, self.sample_frames_version)
-        os.makedirs(base_save_dir, exist_ok=True)
-        video_stem = Path(video_path).stem
-        
+
         spare_frames = vr.get_batch(frame_idx).asnumpy()
-        
-        for i, idx in enumerate(frame_idx):
-            try:
-                frame_file = f"{video_stem}_frame{idx:04d}.jpg"
-                save_path = os.path.join(base_save_dir, frame_file)
-                cv2.imwrite(save_path, cv2.cvtColor(spare_frames[i], cv2.COLOR_RGB2BGR))
-            except Exception as e:
-                eval_logger.warning(f"Failed to save sampled frame {idx}: {e}")
-        # ============================================
+
+        if self.save_sample_frames:
+            import re
+            from pathlib import Path
+
+            import cv2
+
+            extracted_model_name = self.pretrained.split("/")[-1] if "/" in self.pretrained else self.pretrained
+            if self.video_sampling_strategy == "fps":
+                sampling_label = f"fps_{self.video_sample_fps:g}".replace(".", "p")
+            elif self.video_sampling_strategy == "specific":
+                sampling_label = "specific"
+            else:
+                sampling_label = f"{max_frames_num}f"
+            base_model_dir = os.path.join("sample_frames", f"{extracted_model_name}-{sampling_label}")
+
+            if self.sample_frames_version is None:
+                env_key = f"SAMPLE_FRAMES_VERSION_{extracted_model_name}_{max_frames_num}"
+                if env_key not in os.environ:
+                    os.makedirs(base_model_dir, exist_ok=True)
+                    existing_versions = []
+                    for d in os.listdir(base_model_dir):
+                        if os.path.isdir(os.path.join(base_model_dir, d)) and re.match(r"^v_\d+$", d):
+                            existing_versions.append(int(d.split("_")[1]))
+                    next_version = max(existing_versions) + 1 if existing_versions else 1
+                    os.environ[env_key] = f"v_{next_version:02d}"
+                self.sample_frames_version = os.environ[env_key]
+
+            base_save_dir = os.path.join(base_model_dir, self.sample_frames_version)
+            os.makedirs(base_save_dir, exist_ok=True)
+            video_stem = Path(video_path).stem
+
+            for i, idx in enumerate(frame_idx):
+                try:
+                    frame_file = f"{video_stem}_frame{idx:04d}.jpg"
+                    save_path = os.path.join(base_save_dir, frame_file)
+                    cv2.imwrite(save_path, cv2.cvtColor(spare_frames[i], cv2.COLOR_RGB2BGR))
+                except Exception as e:
+                    eval_logger.warning(f"Failed to save sampled frame {idx}: {e}")
 
         return spare_frames  # (frames, height, width, channels)
 
