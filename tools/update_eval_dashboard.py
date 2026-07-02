@@ -13,7 +13,7 @@ DOCS_DIR = REPO_ROOT / "docs"
 DEFAULT_DATA_PATH = DOCS_DIR / "eval_dashboard_data.json"
 DEFAULT_HTML_PATH = DOCS_DIR / "eval_dashboard.html"
 DEFAULT_BASELINE_CACHE_PATH = DOCS_DIR / "eval_baselines.json"
-DEFAULT_BASELINE_EXCEL_PATH = Path(r"C:\Users\a2818\Desktop\QA\抽样测试.xlsx")
+DEFAULT_BASELINE_EXCEL_PATH = Path(r"C:\Users\a2818\Desktop\QA\抽样测试1.xlsx")
 
 CHOICE_ANSWER_TYPES = {"mca", "mac", "mcq", "multiple_choice", "choice"}
 NUMERIC_ANSWER_TYPES = {"na", "numeric", "number", "numerical"}
@@ -637,6 +637,7 @@ def render_dashboard_html(data):
     }};
     const answerModeLabel = r => answerModeKey(r) === 'natural' ? 'COT' : '直接输出';
     const answerModeColor = r => answerModeKey(r) === 'natural' ? '#c2410c' : '#2563eb';
+    const modelPalette = ['#2563eb', '#dc2626', '#059669', '#7c3aed', '#d97706', '#0891b2', '#be185d', '#4d7c0f', '#9333ea', '#0f766e', '#b45309', '#1d4ed8'];
     const token = (r, k) => r.token_usage ? r.token_usage[k] : null;
     const seriesLabel = r => `${{dataVersionLabel(r)}} / ${{r.model || 'unknown'}} / ${{samplingLabel(r)}} / ${{answerModeLabel(r)}}`;
     const seriesKey = r => `${{dataVersionLabel(r)}}||${{r.model || 'unknown'}}||${{samplingLabel(r)}}||${{answerModeKey(r)}}`;
@@ -752,6 +753,18 @@ def render_dashboard_html(data):
       return items.filter(r => answerModeKey(r) === 'restricted');
     }}
 
+    function chartUsesModelColors(items) {{
+      const dataVersions = new Set(items.map(dataVersionLabel));
+      const samplings = new Set(items.map(samplingLabel));
+      const models = new Set(items.map(r => r.model || 'unknown'));
+      return dataVersions.size === 1 && samplings.size === 1 && models.size > 1;
+    }}
+
+    function modelColorMap(items) {{
+      const models = [...new Set(items.map(r => r.model || 'unknown'))].sort();
+      return new Map(models.map((model, index) => [model, modelPalette[index % modelPalette.length]]));
+    }}
+
     function renderBarChart(svgId, items) {{
       const svg = document.getElementById(svgId);
       svg.innerHTML = '';
@@ -759,10 +772,13 @@ def render_dashboard_html(data):
       const padLeft = 58, padRight = 28, padTop = 84, padBottom = 78;
       const comparisonEnabled = chartAllowsAnswerModeComparison();
       const sourceItems = chartRuns(items);
-      const allChartItems = latestPerSeries(sourceItems).slice(0, 12).map(run => ({{
+      const latestItems = latestPerSeries(sourceItems).slice(0, 12);
+      const useModelColors = chartUsesModelColors(latestItems);
+      const colorsByModel = modelColorMap(latestItems);
+      const allChartItems = latestItems.map(run => ({{
         run,
         key: seriesKey(run),
-        color: answerModeColor(run)
+        color: useModelColors ? colorsByModel.get(run.model || 'unknown') : answerModeColor(run)
       }}));
       const visibleChartItems = allChartItems.filter(item => !hiddenSeriesKeys.has(item.key));
       if (!allChartItems.length) {{
@@ -770,7 +786,8 @@ def render_dashboard_html(data):
         return;
       }}
       if (!comparisonEnabled) {{
-        svg.insertAdjacentHTML('beforeend', `<text x="${{padLeft}}" y="60" font-size="12" fill="#667085">未同时选定数据集、模型、采样策略时，图表仅展示直接输出结果。</text>`);
+        const hint = useModelColors ? '同数据版本、同采样策略对比多个模型时，柱子按模型分色。' : '未同时选定数据集、模型、采样策略时，图表仅展示直接输出结果。';
+        svg.insertAdjacentHTML('beforeend', `<text x="${{padLeft}}" y="60" font-size="12" fill="#667085">${{html(hint)}}</text>`);
       }}
 
       const metricSet = new Set(allChartItems.flatMap(item => Object.keys(item.run.metrics || {{}})));

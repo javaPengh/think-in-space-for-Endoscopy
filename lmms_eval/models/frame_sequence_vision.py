@@ -476,6 +476,7 @@ class FrameSequenceVisionModel(lmms):
 
     def _generate_from_content(self, content, images, gen_kwargs, media_type):
         inputs = self._build_inputs(content, images)
+        inputs.pop("labels", None)
         input_tokens = int(inputs["input_ids"].numel())
 
         with torch.no_grad():

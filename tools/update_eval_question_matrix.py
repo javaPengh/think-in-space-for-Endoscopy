@@ -50,6 +50,15 @@ def update_question_matrix_from_sample_file(sample_file_path, data_path=None, ht
     return {"data_path": str(data_path), "html_path": str(html_path), "row_count": len(run_rows)}
 
 
+def refresh_question_matrix_html(data_path=None, html_path=None):
+    data_path = Path(data_path or DEFAULT_DATA_PATH).expanduser().resolve()
+    html_path = Path(html_path or DEFAULT_HTML_PATH).expanduser().resolve()
+    matrix_data = _read_matrix_data(data_path)
+    html_path.parent.mkdir(parents=True, exist_ok=True)
+    html_path.write_text(render_question_matrix_html(matrix_data), encoding="utf-8")
+    return {"data_path": str(data_path), "html_path": str(html_path), "row_count": len(matrix_data.get("rows", []))}
+
+
 def build_question_rows(sample_data, sample_path):
     args = sample_data.get("args", {})
     model_args = _parse_model_args(args.get("model_args", ""))
@@ -191,7 +200,7 @@ def render_question_matrix_html(data):
     }}
     table {{
       width: 100%;
-      min-width: 1320px;
+      min-width: 1400px;
       border-collapse: collapse;
       table-layout: fixed;
     }}
@@ -275,7 +284,7 @@ def render_question_matrix_html(data):
   </header>
   <main>
     <div class="toolbar">
-      <input id="search" type="search" placeholder="搜索模型、题目、输出、真实答案">
+      <input id="search" type="search" placeholder="搜索题号、模型、题目、输出、真实答案">
       <select id="data-version-filter">
         <option value="">全部数据版本</option>
         {data_version_options}
@@ -311,6 +320,7 @@ def render_question_matrix_html(data):
           <col style="width: 145px">
           <col style="width: 100px">
           <col style="width: 180px">
+          <col style="width: 80px">
           <col style="width: 150px">
           <col style="width: 86px">
           <col style="width: 92px">
@@ -328,6 +338,7 @@ def render_question_matrix_html(data):
             <th>模型</th>
             <th>采样策略</th>
             <th>备注</th>
+            <th>题号</th>
             <th>题型</th>
             <th>答案类型</th>
             <th>是否正确/得分</th>
@@ -359,6 +370,7 @@ def render_question_matrix_html(data):
         row.model,
         row.sampling_strategy,
         row.note,
+        row.doc_id,
         row.question_type,
         row.answer_type,
         row.question,
@@ -412,6 +424,7 @@ def render_question_matrix_html(data):
   <td class="nowrap">${{html(row.model)}}</td>
   <td class="nowrap">${{html(row.sampling_strategy)}}</td>
   <td class="text">${{html(row.note)}}</td>
+  <td class="nowrap">${{html(row.doc_id)}}</td>
   <td>${{html(row.question_type)}}</td>
   <td class="nowrap">${{html(row.answer_type)}}</td>
   <td class="nowrap"><span class="status ${{statusClass}}">${{html(statusText)}}</span></td>
@@ -493,6 +506,7 @@ def _render_row(row):
   <td class="nowrap">{_cell(row.get('model'))}</td>
   <td class="nowrap">{_cell(row.get('sampling_strategy'))}</td>
   <td class="text">{_cell(row.get('note'))}</td>
+  <td class="nowrap">{_cell(row.get('doc_id'))}</td>
   <td>{_cell(row.get('question_type'))}</td>
   <td class="nowrap">{_cell(row.get('answer_type'))}</td>
   <td class="nowrap"><span class="status {status_class}">{html.escape(status_text)}</span></td>
@@ -754,11 +768,17 @@ def _relative_or_absolute(path):
 
 def main():
     parser = argparse.ArgumentParser(description="Build VSI-Bench question-level answer matrix from a sample JSON file.")
-    parser.add_argument("sample_file", help="Path to a task sample JSON file, e.g. logs/.../vsibench.json")
+    parser.add_argument("sample_file", nargs="?", help="Path to a task sample JSON file, e.g. logs/.../vsibench.json")
     parser.add_argument("--data_path", default=str(DEFAULT_DATA_PATH), help="Output JSON path.")
     parser.add_argument("--html_path", default=str(DEFAULT_HTML_PATH), help="Output HTML path.")
+    parser.add_argument("--refresh_only", action="store_true", help="Regenerate HTML from the existing matrix JSON without reading a sample file.")
     args = parser.parse_args()
-    paths = update_question_matrix_from_sample_file(args.sample_file, args.data_path, args.html_path)
+    if args.refresh_only:
+        paths = refresh_question_matrix_html(args.data_path, args.html_path)
+    elif args.sample_file:
+        paths = update_question_matrix_from_sample_file(args.sample_file, args.data_path, args.html_path)
+    else:
+        parser.error("sample_file is required unless --refresh_only is set")
     print(json.dumps(paths, indent=2, ensure_ascii=False))
 
 
