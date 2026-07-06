@@ -1,14 +1,18 @@
+import json
 import os
 import re
-from pathlib import Path
-import yaml
-from loguru import logger as eval_logger
-from functools import partial
-import numpy as np
-import pandas as pd
+import time
+import urllib.error
+import urllib.request
 from collections import OrderedDict
+from functools import partial
+from pathlib import Path
 
 import datasets
+import numpy as np
+import pandas as pd
+import yaml
+from loguru import logger as eval_logger
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
@@ -117,6 +121,8 @@ ANSWER_TYPE_ALIASES = {
 
 FINAL_ANSWER_RE = re.compile(r"final\s*answer\s*[:：]\s*([^\n\r]+)", re.IGNORECASE)
 NUMBER_RE = re.compile(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)")
+LLM_EXTRACTION_FAILED = "EXTRACTION_FAILED"
+LLM_EXTRACTION_FAILURE_LABEL = "提取失败"
 
 
 hf_home = os.getenv("HF_HOME", "~/.cache/huggingface/")
@@ -229,7 +235,7 @@ def vsibench_doc_to_text(doc, lmms_eval_specific_kwargs=None):
     else:
         default_pre_prompt = "This is an image." if _doc_media_type(doc) == "image" else "These are frames of a video."
         pre_prompt = lmms_eval_specific_kwargs.get("pre_prompt", "") or default_pre_prompt
-    
+
     answer_type = _doc_answer_type(doc)
     if answer_type == ANSWER_TYPE_NUMERIC:
         if _is_natural_answer_mode():
@@ -249,16 +255,19 @@ def vsibench_doc_to_text(doc, lmms_eval_specific_kwargs=None):
 
 
 def process_docs(dataset: datasets.Dataset) -> datasets.Dataset:
-    if os.getenv('LMMS_EVAL_SHUFFLE_DOCS', None):
+    if os.getenv("LMMS_EVAL_SHUFFLE_DOCS", None):
         eval_logger.info(f"Environment variable LMMS_EVAL_SHUFFLE_DOCS detected, dataset will be shuffled.")
         return dataset.shuffle(seed=42)
     return dataset
 
+
 def fuzzy_matching(pred):
-    return str(pred or "").split(' ')[0].rstrip('.').strip()
+    return str(pred or "").split(" ")[0].rstrip(".").strip()
+
 
 def exact_match(pred, target):
-    return 1. if str(pred or "").lower() == str(target or "").lower() else 0.
+    return 1.0 if str(pred or "").lower() == str(target or "").lower() else 0.0
+
 
 def abs_dist_norm(pred, target):
     if pred is None or target is None:
@@ -267,16 +276,19 @@ def abs_dist_norm(pred, target):
         return 0.0 if pred == 0 else float("inf")
     return abs(pred - target) / abs(target)
 
+
 def mean_relative_accuracy(pred, target, start, end, interval):
     num_pts = (end - start) / interval + 2
     conf_intervs = np.linspace(start, end, int(num_pts))
     accuracy = abs_dist_norm(pred, target) <= 1 - conf_intervs
     return accuracy.mean()
 
+
 WORST_CASE_FOR_METRICS = {
-    ACCURACY_METRIC: 0.,
-    MRA_METRIC: 0.,
+    ACCURACY_METRIC: 0.0,
+    MRA_METRIC: 0.0,
 }
+
 
 def to_float(pred):
     try:
@@ -381,27 +393,187 @@ def _extract_numeric_prediction(pred, require_final_answer=False):
     return None
 
 
+_LLM_EXTRACTION_CACHE = {}
+_LLM_EXTRACTOR_MISSING_KEY_WARNED = False
+
+
+def _to_bool(value):
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _llm_extractor_api_key():
+    return os.getenv("VSI_LLM_EXTRACTOR_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
+
+
+def _llm_extractor_enabled():
+    explicit = os.getenv("VSI_LLM_EXTRACTOR_ENABLED")
+    if explicit is not None:
+        return _to_bool(explicit)
+    return bool(_llm_extractor_api_key())
+
+
+def _llm_extractor_user_prompt(doc, raw_prediction, answer_type):
+    question = str(doc.get("question", "")).strip()
+    if answer_type == ANSWER_TYPE_MULTIPLE_CHOICE:
+        options = "\n".join(str(option) for option in (doc.get("options") or []))
+        answer_instruction = (
+            "The expected answer type is multiple choice. If the model output explicitly states one option, return only its option letter. "
+            f"Valid option letters are: {', '.join(sorted(_parse_option_map(doc).keys()))}. "
+            "If it only states option text, map it to a letter only when the output clearly selects that option."
+        )
+    else:
+        options = ""
+        answer_instruction = "The expected answer type is numeric. If the model output explicitly states one numeric answer, return only that number."
+
+    parts = [
+        answer_instruction,
+        "Do not solve the question yourself. Do not infer an answer from the question, options, or world knowledge.",
+        f"If the model output does not explicitly contain a final answer, return exactly {LLM_EXTRACTION_FAILED}.",
+        "Original question:",
+        question,
+    ]
+    if options:
+        parts.extend(["Options:", options])
+    parts.extend(["Model output to extract from:", str(raw_prediction or "").strip()])
+    return "\n\n".join(parts)
+
+
+def _call_llm_extractor(prompt):
+    global _LLM_EXTRACTOR_MISSING_KEY_WARNED
+
+    api_key = _llm_extractor_api_key()
+    if not api_key:
+        if not _LLM_EXTRACTOR_MISSING_KEY_WARNED:
+            eval_logger.warning("VSI LLM answer extractor is enabled but no API key was found. Set VSI_LLM_EXTRACTOR_API_KEY or DASHSCOPE_API_KEY.")
+            _LLM_EXTRACTOR_MISSING_KEY_WARNED = True
+        return None
+
+    base_url = os.getenv("VSI_LLM_EXTRACTOR_BASE_URL") or os.getenv("DASHSCOPE_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    api_url = os.getenv("VSI_LLM_EXTRACTOR_API_URL") or f"{base_url.rstrip('/')}/chat/completions"
+    model = os.getenv("VSI_LLM_EXTRACTOR_MODEL", "qwen-plus")
+    timeout = int(os.getenv("VSI_LLM_EXTRACTOR_TIMEOUT", "60"))
+    max_retries = int(os.getenv("VSI_LLM_EXTRACTOR_MAX_RETRIES", "2"))
+    retry_sleep = float(os.getenv("VSI_LLM_EXTRACTOR_RETRY_SLEEP", "2"))
+
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": ("You are a strict answer extraction tool for benchmark logs. " f"Return only the extracted answer or exactly {LLM_EXTRACTION_FAILED}. " "Never explain. Never guess."),
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 32,
+    }
+    request_data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+
+    for attempt in range(max_retries + 1):
+        request = urllib.request.Request(api_url, data=request_data, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                response_data = json.loads(response.read().decode("utf-8"))
+            return response_data["choices"][0]["message"]["content"]
+        except (urllib.error.URLError, urllib.error.HTTPError, KeyError, IndexError, json.JSONDecodeError) as error:
+            if attempt >= max_retries:
+                eval_logger.warning(f"VSI LLM answer extractor failed after {attempt + 1} attempts: {error}")
+                return None
+            time.sleep(retry_sleep)
+    return None
+
+
+def _parse_llm_extracted_answer(raw_answer, doc, answer_type):
+    text = str(raw_answer or "").strip().strip("`*_ ")
+    if not text or LLM_EXTRACTION_FAILED in text.upper() or LLM_EXTRACTION_FAILURE_LABEL in text:
+        return None
+
+    first_line = next((line.strip() for line in text.splitlines() if line.strip()), text)
+    if answer_type == ANSWER_TYPE_MULTIPLE_CHOICE:
+        valid_labels = set(_parse_option_map(doc).keys())
+        match = re.search(r"\b([A-Za-z])\b", first_line)
+        if match:
+            label = match.group(1).upper()
+            if label in valid_labels:
+                return label
+        return None
+
+    numbers = NUMBER_RE.findall(first_line)
+    if len(numbers) == 1:
+        return numbers[0]
+    numbers = NUMBER_RE.findall(text)
+    if len(numbers) == 1:
+        return numbers[0]
+    return None
+
+
+def _llm_extract_prediction(raw_prediction, doc, answer_type):
+    if not _llm_extractor_enabled():
+        return {"attempted": False, "prediction": None, "raw": "", "status": "disabled"}
+
+    cache_key = json.dumps(
+        {
+            "answer_type": answer_type,
+            "question": doc.get("question", ""),
+            "options": doc.get("options", []),
+            "raw_prediction": raw_prediction,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    if cache_key in _LLM_EXTRACTION_CACHE:
+        cached = _LLM_EXTRACTION_CACHE[cache_key].copy()
+        cached["attempted"] = True
+        cached["status"] = f"cached_{cached['status']}"
+        return cached
+
+    prompt = _llm_extractor_user_prompt(doc, raw_prediction, answer_type)
+    raw_answer = _call_llm_extractor(prompt)
+    prediction = _parse_llm_extracted_answer(raw_answer, doc, answer_type)
+    status = "extracted" if prediction is not None else "failed"
+    result = {"attempted": True, "prediction": prediction, "raw": raw_answer or "", "status": status}
+    _LLM_EXTRACTION_CACHE[cache_key] = result.copy()
+    return result
+
+
 def vsibench_process_results(doc, results):
     raw_prediction = results[0] if results else ""
     natural_answer_mode = _is_natural_answer_mode()
-    doc['media_type'] = _doc_media_type(doc)
-    doc['answer_type'] = _doc_answer_type(doc)
-    if doc['answer_type'] == ANSWER_TYPE_MULTIPLE_CHOICE:
+    doc["media_type"] = _doc_media_type(doc)
+    doc["answer_type"] = _doc_answer_type(doc)
+    doc["llm_extraction_used"] = False
+    doc["llm_extraction_status"] = ""
+    doc["llm_extraction_raw"] = ""
+    if doc["answer_type"] == ANSWER_TYPE_MULTIPLE_CHOICE:
         restricted_prediction = _extract_choice_prediction(raw_prediction, doc, require_final_answer=natural_answer_mode)
-        doc['natural_prediction'] = raw_prediction if natural_answer_mode else ""
-        doc['restricted_prediction'] = restricted_prediction
-        doc['prediction'] = restricted_prediction
+        if restricted_prediction is None:
+            llm_extraction = _llm_extract_prediction(raw_prediction, doc, doc["answer_type"])
+            doc["llm_extraction_used"] = llm_extraction["attempted"]
+            doc["llm_extraction_status"] = llm_extraction["status"]
+            doc["llm_extraction_raw"] = llm_extraction["raw"]
+            restricted_prediction = llm_extraction["prediction"]
+        doc["natural_prediction"] = raw_prediction if natural_answer_mode else ""
+        doc["restricted_prediction"] = restricted_prediction
+        doc["prediction"] = restricted_prediction
         for key, value in METRICS_FOR_MCA.items():
-            doc[key] = eval(value)(doc['prediction'], doc['ground_truth'])
+            doc[key] = eval(value)(doc["prediction"], doc["ground_truth"])
         doc["is_correct"] = bool(doc.get("accuracy", 0.0))
-    elif doc['answer_type'] == ANSWER_TYPE_NUMERIC:
+    elif doc["answer_type"] == ANSWER_TYPE_NUMERIC:
         restricted_prediction = _extract_numeric_prediction(raw_prediction, require_final_answer=natural_answer_mode)
-        doc['natural_prediction'] = raw_prediction if natural_answer_mode else ""
-        doc['restricted_prediction'] = restricted_prediction
-        doc['prediction'] = restricted_prediction if restricted_prediction is not None else ""
+        if restricted_prediction is None:
+            llm_extraction = _llm_extract_prediction(raw_prediction, doc, doc["answer_type"])
+            doc["llm_extraction_used"] = llm_extraction["attempted"]
+            doc["llm_extraction_status"] = llm_extraction["status"]
+            doc["llm_extraction_raw"] = llm_extraction["raw"]
+            restricted_prediction = llm_extraction["prediction"]
+        doc["natural_prediction"] = raw_prediction if natural_answer_mode else ""
+        doc["restricted_prediction"] = restricted_prediction
+        doc["prediction"] = restricted_prediction if restricted_prediction is not None else ""
         for key, value in METRICS_FOR_NA.items():
             try:
-                doc[key] = eval(value)(to_float(doc['prediction']), to_float(doc['ground_truth']))
+                doc[key] = eval(value)(to_float(doc["prediction"]), to_float(doc["ground_truth"]))
             except TypeError:
                 doc[key] = WORST_CASE_FOR_METRICS[key]
         doc["is_scored"] = any(float(doc.get(key, 0.0)) > 0.0 for key in METRICS_FOR_NA.keys())
@@ -499,7 +671,7 @@ def _build_metric_outputs(results):
 
 
 def _score_to_percent(score):
-    return float(score) * 100.
+    return float(score) * 100.0
 
 
 def vsibench_aggregate_results(results):

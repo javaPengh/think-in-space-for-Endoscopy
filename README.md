@@ -43,6 +43,9 @@ README 后文提到的 `C:\Users\a2818\Desktop\QA\抽样测试.xlsx` 是用于�
 | `internvl3_5_8b` | 本地模型 |
 | `qwen3vl_8b` | 本地模型 |
 | `qwen3vl_32b` | 本地模型 |
+| `lingshu_32b` | 本地模型 |
+| `medgemma_27b` | 本地模型 |
+| `huatuogpt_vision_34b` | 本地模型 |
 | `qwen2_5vl_72b_api` | API |
 | `qwen3vl_235b_a22b_api` | API |
 | `internvideo2_5_chat_8b` | 本地模型 |
@@ -190,6 +193,27 @@ Final answer: 12.3
 | `prediction` | 兼容旧流程，仍然等于 `restricted_prediction`。 |
 
 现有 aggregate 指标只使用 `restricted_prediction` 计算，不直接使用自然输出计算指标。
+
+当规则抽取无法从 COT 输出中解析出答案时，可以启用大模型兜底抽取。该逻辑只在 `restricted_prediction` 为空时触发，默认读取百炼/DashScope 兼容接口；提示词会明确要求只从模型原始输出中抽取显式答案，不能重新解题或猜测。如果原始输出没有明确给出答案，兜底模型必须返回 `EXTRACTION_FAILED`，该样本仍按提取失败处理。
+
+常用环境变量：
+
+| 环境变量 | 作用 |
+| --- | --- |
+| `VSI_LLM_EXTRACTOR_ENABLED` | 是否启用大模型兜底抽取。未设置时，如果存在 `VSI_LLM_EXTRACTOR_API_KEY` 或 `DASHSCOPE_API_KEY` 会自动启用。 |
+| `VSI_LLM_EXTRACTOR_API_KEY` | 兜底抽取专用 API key；未设置时回退使用 `DASHSCOPE_API_KEY`。 |
+| `VSI_LLM_EXTRACTOR_MODEL` | 兜底抽取模型，默认 `qwen-plus`。 |
+| `VSI_LLM_EXTRACTOR_BASE_URL` | OpenAI-compatible base url，默认 `https://dashscope.aliyuncs.com/compatible-mode/v1`。 |
+| `VSI_LLM_EXTRACTOR_API_URL` | 完整 chat completions URL；设置后优先于 base url。 |
+
+示例：
+
+```bash
+VSI_LLM_EXTRACTOR_ENABLED=true \
+VSI_LLM_EXTRACTOR_API_KEY=你的百炼APIKey \
+VSI_LLM_EXTRACTOR_MODEL=qwen-plus \
+bash evaluate_all_in_one.sh --model qwen3vl_8b --answer_mode natural --limit 20
+```
 
 评估结束写出 `vsibench.json` 样本日志后，会自动生成：
 
