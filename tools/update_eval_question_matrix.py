@@ -6,7 +6,6 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DOCS_DIR = REPO_ROOT / "docs"
 DEFAULT_DATA_PATH = DOCS_DIR / "eval_question_matrix.json"
@@ -185,9 +184,20 @@ def render_question_matrix_html(data):
       color: var(--text);
       font-size: 13px;
     }}
-    input {{
+    input[type="search"] {{
       min-width: 260px;
       flex: 1 1 300px;
+    }}
+    .time-filter {{
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      color: var(--muted);
+      font-size: 13px;
+    }}
+    .time-filter input {{
+      min-width: 182px;
+      flex: 0 0 182px;
     }}
     select {{
       min-width: 160px;
@@ -197,6 +207,30 @@ def render_question_matrix_html(data):
       border: 1px solid var(--border);
       border-radius: 8px;
       background: #fff;
+    }}
+    .bottom-scroll {{
+      position: fixed;
+      left: 28px;
+      right: 28px;
+      bottom: 12px;
+      z-index: 10;
+      height: 18px;
+      overflow-x: auto;
+      overflow-y: hidden;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: #fff;
+      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.16);
+      display: none;
+    }}
+    .bottom-scroll.visible {{
+      display: block;
+    }}
+    .bottom-scroll-inner {{
+      height: 1px;
+    }}
+    body.has-bottom-scroll {{
+      padding-bottom: 42px;
     }}
     table {{
       width: 100%;
@@ -285,6 +319,12 @@ def render_question_matrix_html(data):
   <main>
     <div class="toolbar">
       <input id="search" type="search" placeholder="搜索题号、模型、题目、输出、真实答案">
+      <label class="time-filter" for="time-start">开始时间
+        <input id="time-start" type="datetime-local">
+      </label>
+      <label class="time-filter" for="time-end">结束时间
+        <input id="time-end" type="datetime-local">
+      </label>
       <select id="data-version-filter">
         <option value="">全部数据版本</option>
         {data_version_options}
@@ -312,8 +352,8 @@ def render_question_matrix_html(data):
         <button id="next-page" type="button">下一页</button>
       </div>
     </div>
-    <div class="table-wrap">
-      <table>
+    <div id="table-wrap" class="table-wrap">
+      <table id="matrix-table">
         <colgroup>
           <col style="width: 112px">
           <col style="width: 120px">
@@ -355,6 +395,9 @@ def render_question_matrix_html(data):
       <div id="empty" class="empty" hidden>没有匹配记录</div>
     </div>
   </main>
+  <div id="bottom-scroll" class="bottom-scroll" aria-hidden="true">
+    <div id="bottom-scroll-inner" class="bottom-scroll-inner"></div>
+  </div>
   <script id="matrix-data" type="application/json">{matrix_rows_json}</script>
   <script>
     const allRows = JSON.parse(document.getElementById("matrix-data").textContent || "[]");
@@ -383,7 +426,13 @@ def render_question_matrix_html(data):
     }}
 
     const matrixBody = document.getElementById("matrix-body");
+    const tableWrap = document.getElementById("table-wrap");
+    const matrixTable = document.getElementById("matrix-table");
+    const bottomScroll = document.getElementById("bottom-scroll");
+    const bottomScrollInner = document.getElementById("bottom-scroll-inner");
     const search = document.getElementById("search");
+    const timeStart = document.getElementById("time-start");
+    const timeEnd = document.getElementById("time-end");
     const dataVersionFilter = document.getElementById("data-version-filter");
     const modelFilter = document.getElementById("model-filter");
     const samplingFilter = document.getElementById("sampling-filter");
@@ -416,6 +465,22 @@ def render_question_matrix_html(data):
       return ["", ""];
     }}
 
+    function parseTimestamp(value) {{
+      const raw = String(value ?? "").trim();
+      if (!raw) return null;
+      const normalized = raw.replace(/T(\\d{{2}})-(\\d{{2}})-(\\d{{2}})/, "T$1:$2:$3");
+      let parsed = Date.parse(normalized);
+      if (!Number.isNaN(parsed)) return parsed;
+      parsed = Date.parse(normalized.slice(0, 19));
+      return Number.isNaN(parsed) ? null : parsed;
+    }}
+
+    function parseDateTimeInput(input) {{
+      if (!input.value) return null;
+      const parsed = Date.parse(input.value);
+      return Number.isNaN(parsed) ? null : parsed;
+    }}
+
     function renderRow(row) {{
       const [statusText, statusClass] = status(row);
       return `<tr>
@@ -442,15 +507,29 @@ def render_question_matrix_html(data):
       const dataVersion = dataVersionFilter.value;
       const model = modelFilter.value;
       const sampling = samplingFilter.value;
+      const startTime = parseDateTimeInput(timeStart);
+      const endTime = parseDateTimeInput(timeEnd);
       filteredRows = allRows.filter((row) => {{
         const matchesDataVersion = !dataVersion || row.data_version === dataVersion;
         const matchesModel = !model || row.model === model;
         const matchesSampling = !sampling || row.sampling_strategy === sampling;
         const matchesKeyword = !keyword || rowSearchText(row).includes(keyword);
-        return matchesDataVersion && matchesModel && matchesSampling && matchesKeyword;
+        const rowTime = parseTimestamp(row.timestamp);
+        const matchesStart = startTime === null || rowTime === null || rowTime >= startTime;
+        const matchesEnd = endTime === null || rowTime === null || rowTime <= endTime;
+        return matchesDataVersion && matchesModel && matchesSampling && matchesKeyword && matchesStart && matchesEnd;
       }});
       currentPage = 1;
       renderPage();
+    }}
+
+    function updateBottomScroll() {{
+      const tableWidth = Math.max(matrixTable.scrollWidth, tableWrap.scrollWidth);
+      const hasOverflow = tableWidth > tableWrap.clientWidth + 1;
+      bottomScroll.classList.toggle("visible", hasOverflow);
+      document.body.classList.toggle("has-bottom-scroll", hasOverflow);
+      bottomScrollInner.style.width = `${{tableWidth}}px`;
+      bottomScroll.scrollLeft = tableWrap.scrollLeft;
     }}
 
     function renderPage() {{
@@ -466,6 +545,7 @@ def render_question_matrix_html(data):
       prevPage.disabled = currentPage <= 1;
       nextPage.disabled = currentPage >= totalPages;
       empty.hidden = total !== 0;
+      requestAnimationFrame(updateBottomScroll);
     }}
 
     function scheduleFilters() {{
@@ -474,6 +554,8 @@ def render_question_matrix_html(data):
     }}
 
     search.addEventListener("input", scheduleFilters);
+    timeStart.addEventListener("change", applyFilters);
+    timeEnd.addEventListener("change", applyFilters);
     dataVersionFilter.addEventListener("change", applyFilters);
     modelFilter.addEventListener("change", applyFilters);
     samplingFilter.addEventListener("change", applyFilters);
@@ -489,6 +571,13 @@ def render_question_matrix_html(data):
       currentPage += 1;
       renderPage();
     }});
+    tableWrap.addEventListener("scroll", () => {{
+      bottomScroll.scrollLeft = tableWrap.scrollLeft;
+    }});
+    bottomScroll.addEventListener("scroll", () => {{
+      tableWrap.scrollLeft = bottomScroll.scrollLeft;
+    }});
+    window.addEventListener("resize", updateBottomScroll);
     renderPage();
   </script>
 </body>

@@ -153,4 +153,59 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import json
+    import urllib.request
+    import urllib.error
+
+    api_key = "sk-68a39855d0ec4d8ea23999d4d5ccd306"
+    if not api_key:
+        raise SystemExit("DASHSCOPE_API_KEY is not set")
+
+    url = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+
+    payload = {
+        "model": "qwen-plus",
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are a strict answer extraction tool. Return only the answer or EXTRACTION_FAILED.",
+            },
+            {
+                "role": "user",
+                "content": (
+                    "Extract the explicit final answer from this model output.\n"
+                    "If no explicit answer exists, return exactly EXTRACTION_FAILED.\n\n"
+                    "Model output:\n"
+                    "After comparing the options, the answer is B."
+                ),
+            },
+        ],
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 32,
+    }
+
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        print("HTTPError:", e.code)
+        print(e.read().decode("utf-8", errors="replace"))
+        raise
+    except Exception as e:
+        print(type(e).__name__, e)
+        raise
+
+    print(json.dumps(data, ensure_ascii=False, indent=2))
+    print("\nExtracted content:")
+    print(data["choices"][0]["message"]["content"])

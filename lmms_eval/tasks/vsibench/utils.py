@@ -395,6 +395,21 @@ def _extract_numeric_prediction(pred, require_final_answer=False):
 
 _LLM_EXTRACTION_CACHE = {}
 _LLM_EXTRACTOR_MISSING_KEY_WARNED = False
+_FATAL_LLM_EXTRACTOR_HTTP_STATUS = {400, 401, 403, 404}
+_FATAL_LLM_EXTRACTOR_ERROR_KEYWORDS = (
+    "arrearage",
+    "invalidapikey",
+    "invalid_api_key",
+    "unauthorized",
+    "forbidden",
+    "accessdenied",
+    "access_denied",
+    "permission",
+    "quota",
+    "insufficient",
+    "modelnotfound",
+    "model_not_found",
+)
 
 
 def _to_bool(value):
@@ -438,6 +453,37 @@ def _llm_extractor_user_prompt(doc, raw_prediction, answer_type):
     return "\n\n".join(parts)
 
 
+def _decode_http_error_body(error):
+    try:
+        return error.read().decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
+def _llm_extractor_error_code(error_body):
+    try:
+        data = json.loads(error_body)
+    except json.JSONDecodeError:
+        return ""
+
+    error = data.get("error") if isinstance(data, dict) else None
+    if isinstance(error, dict):
+        return str(error.get("code") or error.get("type") or "")
+    return str(data.get("code") or data.get("type") or "") if isinstance(data, dict) else ""
+
+
+def _is_fatal_llm_extractor_http_error(status_code, error_body):
+    if status_code in _FATAL_LLM_EXTRACTOR_HTTP_STATUS:
+        return True
+    haystack = f"{_llm_extractor_error_code(error_body)} {error_body}".lower().replace("-", "").replace(" ", "")
+    return any(keyword in haystack for keyword in _FATAL_LLM_EXTRACTOR_ERROR_KEYWORDS)
+
+
+def _raise_fatal_llm_extractor_error(status_code, error_body):
+    detail = error_body.strip() or "<empty response body>"
+    raise RuntimeError("VSI LLM answer extractor is unavailable due to a non-retryable DashScope/Bailian API error. " f"HTTP status: {status_code}. Response body: {detail}")
+
+
 def _call_llm_extractor(prompt):
     global _LLM_EXTRACTOR_MISSING_KEY_WARNED
 
@@ -446,7 +492,7 @@ def _call_llm_extractor(prompt):
         if not _LLM_EXTRACTOR_MISSING_KEY_WARNED:
             eval_logger.warning("VSI LLM answer extractor is enabled but no API key was found. Set VSI_LLM_EXTRACTOR_API_KEY or DASHSCOPE_API_KEY.")
             _LLM_EXTRACTOR_MISSING_KEY_WARNED = True
-        return None
+        raise RuntimeError("VSI LLM answer extractor is enabled but no API key was found. Set VSI_LLM_EXTRACTOR_API_KEY or DASHSCOPE_API_KEY.")
 
     base_url = os.getenv("VSI_LLM_EXTRACTOR_BASE_URL") or os.getenv("DASHSCOPE_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1"
     api_url = os.getenv("VSI_LLM_EXTRACTOR_API_URL") or f"{base_url.rstrip('/')}/chat/completions"
@@ -477,7 +523,16 @@ def _call_llm_extractor(prompt):
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 response_data = json.loads(response.read().decode("utf-8"))
             return response_data["choices"][0]["message"]["content"]
-        except (urllib.error.URLError, urllib.error.HTTPError, KeyError, IndexError, json.JSONDecodeError) as error:
+        except urllib.error.HTTPError as error:
+            error_body = _decode_http_error_body(error)
+            if _is_fatal_llm_extractor_http_error(error.code, error_body):
+                _raise_fatal_llm_extractor_error(error.code, error_body)
+            if attempt >= max_retries:
+                eval_logger.warning(f"VSI LLM answer extractor failed after {attempt + 1} attempts: HTTP {error.code}: {error_body}")
+                return None
+            eval_logger.warning(f"VSI LLM answer extractor retrying after HTTP {error.code}: {error_body}")
+            time.sleep(retry_sleep)
+        except (urllib.error.URLError, KeyError, IndexError, json.JSONDecodeError) as error:
             if attempt >= max_retries:
                 eval_logger.warning(f"VSI LLM answer extractor failed after {attempt + 1} attempts: {error}")
                 return None
