@@ -26,7 +26,7 @@ VSI-Bench 的问答对由 `lmms_eval/tasks/vsibench/vsibench.yaml` 中的 `datas
 ${HF_HOME}/vsibench/{dataset}/{scene_name}.mp4
 ```
 
-README 后文提到的 `C:\Users\a2818\Desktop\QA\抽样测试.xlsx` 是用于计算 dashboard 水平基线的本地 Excel 题库，不是远程评估时直接读取的 VSI-Bench 问答数据集目录。
+README 后文提到的 `C:\Users\a2818\Desktop\QA\总问答数据.xlsx` 是用于计算 dashboard 水平基线的本地 Excel 题库，不是远程评估时直接读取的 VSI-Bench 问答数据集目录。
 
 ## 支持模型
 
@@ -284,13 +284,13 @@ export VSI_DEBUG_PROMPT_DIR=docs/prompt_debug
 Dashboard 支持从 Excel 题库生成水平基线，并叠加到 `指标对比` 图表中。默认会尝试读取：
 
 ```text
-C:\Users\a2818\Desktop\QA\抽样测试.xlsx
+C:\Users\a2818\Desktop\QA\总问答数据.xlsx
 ```
 
 如果默认路径存在，评估结束更新 dashboard 时会自动计算并写入基线。也可以手动指定 Excel 文件刷新 dashboard：
 
 ```bash
-python tools/update_eval_dashboard.py --baseline_excel "C:\Users\a2818\Desktop\QA\抽样测试.xlsx"
+python tools/update_eval_dashboard.py --baseline_excel "C:\Users\a2818\Desktop\QA\总问答数据.xlsx"
 ```
 
 基线会同时缓存到：
@@ -302,13 +302,13 @@ docs/eval_baselines.json
 远程服务器没有本地 Excel 时，dashboard 会自动读取这个 JSON 缓存继续显示基线。更新题库后，可以只重新生成基线缓存：
 
 ```bash
-python tools/update_eval_dashboard.py --update_baseline_cache_only --baseline_excel "C:\Users\a2818\Desktop\QA\抽样测试.xlsx"
+python tools/update_eval_dashboard.py --update_baseline_cache_only --baseline_excel "C:\Users\a2818\Desktop\QA\总问答数据.xlsx"
 ```
 
 或者在追加某个 `results.json` 时同时指定题库：
 
 ```bash
-python tools/update_eval_dashboard.py logs/YYYYMMDD/vsibench/path/to/results.json --baseline_excel "C:\Users\a2818\Desktop\QA\抽样测试.xlsx"
+python tools/update_eval_dashboard.py logs/YYYYMMDD/vsibench/path/to/results.json --baseline_excel "C:\Users\a2818\Desktop\QA\总问答数据.xlsx"
 ```
 
 ### 基线含义

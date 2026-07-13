@@ -13,12 +13,11 @@ DEFAULT_HTML_PATH = DOCS_DIR / "eval_question_matrix.html"
 MRA_METRIC = "MRA:.5:.95:.05"
 SOURCE_ID_KEYS = ("question_id", "id", "ID", "Question_ID", "questionId")
 NUMERIC_QUESTION_TYPES = {
-    "counting(object)",
-    "counting(action)",
-    "polyp_size_estimation(ref)",
     "object_abs_distance",
     "object_counting",
+    "action_counting",
     "object_size_estimation",
+    "polyp_size_estimation",
     "room_size_estimation",
 }
 

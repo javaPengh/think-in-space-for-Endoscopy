@@ -7,21 +7,15 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DOCS_DIR = REPO_ROOT / "docs"
 DEFAULT_DATA_PATH = DOCS_DIR / "eval_dashboard_data.json"
 DEFAULT_HTML_PATH = DOCS_DIR / "eval_dashboard.html"
 DEFAULT_BASELINE_CACHE_PATH = DOCS_DIR / "eval_baselines.json"
-DEFAULT_BASELINE_EXCEL_PATH = Path(r"C:\Users\a2818\Desktop\QA\抽样测试1.xlsx")
+DEFAULT_BASELINE_EXCEL_PATH = Path(r"C:\Users\a2818\Desktop\QA\总问答数据.xlsx")
 
 CHOICE_ANSWER_TYPES = {"mca", "mac", "mcq", "multiple_choice", "choice"}
 NUMERIC_ANSWER_TYPES = {"na", "numeric", "number", "numerical"}
-QUESTION_TYPE_METRIC_MAP = {
-    "object_rel_direction_easy": "object_rel_direction_accuracy",
-    "object_rel_direction_medium": "object_rel_direction_accuracy",
-    "object_rel_direction_hard": "object_rel_direction_accuracy",
-}
 
 
 def update_dashboard_from_result_file(result_file_path, data_path=None, html_path=None, baseline_excel_path=None, baseline_cache_path=None):
@@ -392,7 +386,7 @@ def _normalize_answer_label(value):
 def _metric_key_for_question_type(question_type, answer_kind):
     question_type = str(question_type).strip()
     if answer_kind == "choice":
-        return QUESTION_TYPE_METRIC_MAP.get(question_type, f"{question_type}_accuracy")
+        return f"{question_type}_accuracy"
     return f"{question_type}_MRA:.5:.95:.05"
 
 
@@ -653,21 +647,17 @@ def render_dashboard_html(data):
       overall: '平均分',
       image_overall: '图像总体',
       video_overall: '视频数据平均分',
-      'counting_MRA:.5:.95:.05': '计数总体',
-      'counting(object)_MRA:.5:.95:.05': '物体计数',
-      'counting(action)_MRA:.5:.95:.05': '动作计数',
+      'object_counting_MRA:.5:.95:.05': '物体计数',
+      'action_counting_MRA:.5:.95:.05': '动作计数',
       object_rel_direction_accuracy: '相对方向',
       fold_rel_depth_accuracy: '相对深度',
       route_planning_accuracy: '路径规划',
-      temporal_accuracy: '时序总体',
-      'temporal(object)_accuracy': '物体时序',
-      'temporal(action)_accuracy': '动作时序',
-      polyp_size_estimation_overall: '息肉尺寸总体',
-      'polyp_size_estimation(ref)_MRA:.5:.95:.05': '息肉尺寸(有参考)',
-      'polyp_size_estimation(no_ref)_accuracy': '息肉尺寸(无参考)'
+      object_order_accuracy: '物体出现顺序',
+      action_order_accuracy: '动作出现顺序',
+      'polyp_size_estimation_MRA:.5:.95:.05': '息肉尺寸估计'
     }};
     const metricLabel = key => metricLabelMap[key] || key;
-    const preferredMetrics = ['overall', 'image_overall', 'video_overall', 'counting_MRA:.5:.95:.05', 'counting(object)_MRA:.5:.95:.05', 'counting(action)_MRA:.5:.95:.05', 'object_rel_direction_accuracy', 'fold_rel_depth_accuracy', 'route_planning_accuracy', 'temporal_accuracy', 'temporal(object)_accuracy', 'temporal(action)_accuracy', 'polyp_size_estimation_overall', 'polyp_size_estimation(ref)_MRA:.5:.95:.05', 'polyp_size_estimation(no_ref)_accuracy'];
+    const preferredMetrics = ['overall', 'image_overall', 'video_overall', 'object_counting_MRA:.5:.95:.05', 'action_counting_MRA:.5:.95:.05', 'object_rel_direction_accuracy', 'fold_rel_depth_accuracy', 'route_planning_accuracy', 'object_order_accuracy', 'action_order_accuracy', 'polyp_size_estimation_MRA:.5:.95:.05'];
     const preferredSamplingValue = values => values.includes('fps_1') ? 'fps_1' : (values[0] || '');
     const activeRuns = () => runs.filter(r => !deletedRunIds.has(r.run_id));
     const persistDeletedRunIds = () => {{

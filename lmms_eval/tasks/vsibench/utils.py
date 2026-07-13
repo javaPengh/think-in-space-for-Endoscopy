@@ -18,19 +18,16 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
 
 MCA_QUESTION_TYPES = [
-    "object_rel_direction_easy",
-    "object_rel_direction_medium",
-    "object_rel_direction_hard",
+    "object_rel_direction",
     "fold_rel_depth",
     "route_planning",
-    "temporal(object)",
-    "temporal(action)",
-    "polyp_size_estimation(no_ref)",
+    "object_order",
+    "action_order",
 ]
 NA_QUESTION_TYPES = [
-    "counting(object)",
-    "counting(action)",
-    "polyp_size_estimation(ref)",
+    "object_counting",
+    "action_counting",
+    "polyp_size_estimation",
 ]
 
 ACCURACY_METRIC = "accuracy"
@@ -44,65 +41,15 @@ METRICS_FOR_NA = {
     MRA_METRIC: "partial(mean_relative_accuracy, start=.5, end=.95, interval=.05)",
 }
 
-COMPOSITE_QUESTION_TYPES = OrderedDict(
-    [
-        (
-            "object_rel_direction",
-            {
-                "members": ["object_rel_direction_easy", "object_rel_direction_medium", "object_rel_direction_hard"],
-                "metric_key": f"object_rel_direction_{ACCURACY_METRIC}",
-                "include_members": False,
-            },
-        ),
-        (
-            "counting",
-            {
-                "members": ["counting(object)", "counting(action)"],
-                "metric_key": f"counting_{MRA_METRIC}",
-                "include_members": True,
-            },
-        ),
-        (
-            "temporal",
-            {
-                "members": ["temporal(object)", "temporal(action)"],
-                "metric_key": f"temporal_{ACCURACY_METRIC}",
-                "include_members": True,
-            },
-        ),
-        (
-            "polyp_size_estimation",
-            {
-                "members": ["polyp_size_estimation(ref)", "polyp_size_estimation(no_ref)"],
-                "metric_key": "polyp_size_estimation_overall",
-                "include_members": True,
-            },
-        ),
-    ]
-)
-
-TOP_LEVEL_RESULT_KEYS = [
-    f"counting_{MRA_METRIC}",
-    f"object_rel_direction_{ACCURACY_METRIC}",
-    f"fold_rel_depth_{ACCURACY_METRIC}",
-    f"route_planning_{ACCURACY_METRIC}",
-    f"temporal_{ACCURACY_METRIC}",
-    "polyp_size_estimation_overall",
-]
-
 AGGREGATED_RESULT_KEYS = [
-    f"counting_{MRA_METRIC}",
-    f"counting(object)_{MRA_METRIC}",
-    f"counting(action)_{MRA_METRIC}",
+    f"object_counting_{MRA_METRIC}",
+    f"action_counting_{MRA_METRIC}",
     f"object_rel_direction_{ACCURACY_METRIC}",
     f"fold_rel_depth_{ACCURACY_METRIC}",
     f"route_planning_{ACCURACY_METRIC}",
-    f"temporal_{ACCURACY_METRIC}",
-    f"temporal(object)_{ACCURACY_METRIC}",
-    f"temporal(action)_{ACCURACY_METRIC}",
-    "polyp_size_estimation_overall",
-    f"polyp_size_estimation(ref)_{MRA_METRIC}",
-    f"polyp_size_estimation(no_ref)_{ACCURACY_METRIC}",
+    f"object_order_{ACCURACY_METRIC}",
+    f"action_order_{ACCURACY_METRIC}",
+    f"polyp_size_estimation_{MRA_METRIC}",
 ]
 
 ANSWER_TYPE_MULTIPLE_CHOICE = "multiple_choice"
@@ -655,13 +602,6 @@ def _result_key_for_question_type(question_type, answer_type, answer_type_count)
     return f"{question_type}_{metric}"
 
 
-def _remove_question_type_outputs(output, question_type):
-    prefix = f"{question_type}_"
-    for key in list(output.keys()):
-        if key.startswith(prefix):
-            output.pop(key)
-
-
 def _mean_row_score(rows):
     scores = []
     for _, row in rows.iterrows():
@@ -673,25 +613,6 @@ def _mean_row_score(rows):
     if not scores:
         return None
     return sum(scores) / len(scores)
-
-
-def _is_composite_member_result_key(key):
-    for config in COMPOSITE_QUESTION_TYPES.values():
-        for member in config["members"]:
-            if key.startswith(f"{member}_"):
-                return True
-    return False
-
-
-def _overall_keys_for_outputs(output):
-    overall_keys = [key for key in TOP_LEVEL_RESULT_KEYS if key in output]
-    seen = set(overall_keys)
-    for key in output.keys():
-        if key in seen or _is_composite_member_result_key(key):
-            continue
-        overall_keys.append(key)
-        seen.add(key)
-    return overall_keys
 
 
 def _build_metric_outputs(results):
@@ -708,20 +629,9 @@ def _build_metric_outputs(results):
                 if metric in per_answer_type:
                     output[_result_key_for_question_type(question_type, answer_type, answer_type_count)] = per_answer_type[metric].mean()
 
-    for config in COMPOSITE_QUESTION_TYPES.values():
-        per_composite = results[results["question_type"].isin(config["members"])]
-        if len(per_composite) == 0:
-            continue
-        score = _mean_row_score(per_composite)
-        if score is not None:
-            output[config["metric_key"]] = score
-        if not config.get("include_members", True):
-            for member in config["members"]:
-                _remove_question_type_outputs(output, member)
-
-    overall_keys = _overall_keys_for_outputs(output)
-    if overall_keys:
-        output["overall"] = sum(float(output[key]) for key in overall_keys) / len(overall_keys)
+    overall = _mean_row_score(results)
+    if overall is not None:
+        output["overall"] = overall
     return output
 
 
