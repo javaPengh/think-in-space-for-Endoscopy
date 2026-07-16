@@ -208,7 +208,7 @@ Final answer: 12.3
 | `VSI_LLM_EXTRACTOR_BASE_URL` | OpenAI-compatible base url，默认 `https://dashscope.aliyuncs.com/compatible-mode/v1`。 |
 | `VSI_LLM_EXTRACTOR_API_URL` | 完整 chat completions URL；设置后优先于 base url。 |
 
-示例：
+该功能通过环境变量控制，不需要修改评估命令本身。开启方式：
 
 ```bash
 VSI_LLM_EXTRACTOR_ENABLED=true \
@@ -216,6 +216,15 @@ VSI_LLM_EXTRACTOR_API_KEY=你的百炼APIKey \
 VSI_LLM_EXTRACTOR_MODEL=qwen-plus \
 bash evaluate_all_in_one.sh --model qwen3vl_8b --answer_mode natural --limit 20
 ```
+
+如果已经在环境里配置了 `DASHSCOPE_API_KEY` 或 `VSI_LLM_EXTRACTOR_API_KEY`，且没有显式设置 `VSI_LLM_EXTRACTOR_ENABLED=false`，兜底抽取会自动启用。若有 API key 但本次评估不希望启用，使用：
+
+```bash
+VSI_LLM_EXTRACTOR_ENABLED=false \
+bash evaluate_all_in_one.sh --model qwen3vl_8b --answer_mode natural --limit 20
+```
+
+兜底抽取只在规则抽取失败时调用，不会对每道题都请求百炼接口。
 
 评估结束写出 `vsibench.json` 样本日志后，会自动生成：
 

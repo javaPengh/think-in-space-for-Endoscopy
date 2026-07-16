@@ -27,7 +27,7 @@ def update_dashboard_from_result_file(result_file_path, data_path=None, html_pat
     with result_path.open("r", encoding="utf-8") as f:
         results = json.load(f)
 
-    run = build_run_record(results, result_path)
+    run = _normalize_run_record(build_run_record(results, result_path))
     data = _read_data(data_path)
     runs = [_normalize_run_record(item) for item in data.get("runs", []) if item.get("result_path") != run["result_path"]]
     runs.append(run)
@@ -114,7 +114,15 @@ def build_run_record(results, result_path):
 def _normalize_run_record(run):
     normalized = dict(run)
     normalized["answer_mode"] = _normalize_answer_mode(normalized.get("answer_mode") or _infer_answer_mode(normalized.get("result_path"), normalized))
+    metrics = normalized.get("metrics")
+    if isinstance(metrics, dict):
+        normalized["metrics"] = {_normalize_metric_name(key): value for key, value in metrics.items()}
     return normalized
+
+
+def _normalize_metric_name(value):
+    metric_name = str(value or "").strip()
+    return re.sub(r"\s+_(?=(?:accuracy|MRA:))", "_", metric_name)
 
 
 def _normalize_answer_mode(value):
@@ -657,6 +665,13 @@ def render_dashboard_html(data):
       'polyp_size_estimation_MRA:.5:.95:.05': '息肉尺寸估计'
     }};
     const metricLabel = key => metricLabelMap[key] || key;
+    const metricLabelLineMap = {{
+      video_overall: ['视频数据', '平均分'],
+      object_order_accuracy: ['物体出现', '顺序'],
+      action_order_accuracy: ['动作出现', '顺序'],
+      'polyp_size_estimation_MRA:.5:.95:.05': ['息肉尺寸', '估计']
+    }};
+    const metricLabelLines = key => metricLabelLineMap[key] || [metricLabel(key)];
     const preferredMetrics = ['overall', 'image_overall', 'video_overall', 'object_counting_MRA:.5:.95:.05', 'action_counting_MRA:.5:.95:.05', 'object_rel_direction_accuracy', 'fold_rel_depth_accuracy', 'route_planning_accuracy', 'object_order_accuracy', 'action_order_accuracy', 'polyp_size_estimation_MRA:.5:.95:.05'];
     const preferredSamplingValue = values => values.includes('fps_1') ? 'fps_1' : (values[0] || '');
     const activeRuns = () => runs.filter(r => !deletedRunIds.has(r.run_id));
@@ -759,7 +774,7 @@ def render_dashboard_html(data):
       const svg = document.getElementById(svgId);
       svg.innerHTML = '';
       const width = svg.clientWidth || 1100, height = svg.clientHeight || 500;
-      const padLeft = 58, padRight = 28, padTop = 84, padBottom = 78;
+      const padLeft = 58, padRight = 28, padTop = 84, padBottom = 90;
       const comparisonEnabled = chartAllowsAnswerModeComparison();
       const sourceItems = chartRuns(items);
       const latestItems = latestPerSeries(sourceItems).slice(0, 12);
@@ -775,13 +790,13 @@ def render_dashboard_html(data):
         svg.insertAdjacentHTML('beforeend', `<text x="${{width / 2}}" y="${{height / 2}}" text-anchor="middle" font-size="13" fill="#667085">暂无记录</text>`);
         return;
       }}
-      if (!comparisonEnabled) {{
-        const hint = useModelColors ? '同数据版本、同采样策略对比多个模型时，柱子按模型分色。' : '未同时选定数据集、模型、采样策略时，图表仅展示直接输出结果。';
+      if (!comparisonEnabled && useModelColors) {{
+        const hint = '同数据版本、同采样策略对比多个模型时，柱子按模型分色。';
         svg.insertAdjacentHTML('beforeend', `<text x="${{padLeft}}" y="60" font-size="12" fill="#667085">${{html(hint)}}</text>`);
       }}
 
       const metricSet = new Set(allChartItems.flatMap(item => Object.keys(item.run.metrics || {{}})));
-      const metricKeys = [...preferredMetrics.filter(k => metricSet.has(k)), ...[...metricSet].filter(k => !preferredMetrics.includes(k)).sort()].slice(0, 16);
+      const metricKeys = preferredMetrics.filter(key => metricSet.has(key));
       if (!metricKeys.length) {{
         svg.insertAdjacentHTML('beforeend', `<text x="${{width / 2}}" y="${{height / 2}}" text-anchor="middle" font-size="13" fill="#667085">暂无可展示指标</text>`);
         return;
@@ -844,9 +859,11 @@ def render_dashboard_html(data):
       }});
 
       metricKeys.forEach((key, i) => {{
-        const label = metricLabel(key);
+        const labelLines = metricLabelLines(key);
         const x = padLeft + i * groupW + groupW / 2;
-        svg.insertAdjacentHTML('beforeend', `<text x="${{x}}" y="${{height - 40}}" text-anchor="middle" font-size="12" fill="#475467">${{html(label)}}<title>${{html(key)}}</title></text>`);
+        const y = height - (labelLines.length > 1 ? 53 : 45);
+        const tspans = labelLines.map((line, lineIndex) => `<tspan x="${{x}}" dy="${{lineIndex === 0 ? 0 : 15}}">${{html(line)}}</tspan>`).join('');
+        svg.insertAdjacentHTML('beforeend', `<text x="${{x}}" y="${{y}}" text-anchor="middle" font-size="12" fill="#475467"><title>${{html(key)}}</title>${{tspans}}</text>`);
       }});
 
       visibleBaselineKinds.forEach((kind, i) => {{

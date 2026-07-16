@@ -543,6 +543,7 @@ def _llm_extract_prediction(raw_prediction, doc, answer_type):
 def vsibench_process_results(doc, results):
     raw_prediction = results[0] if results else ""
     natural_answer_mode = _is_natural_answer_mode()
+    doc["question_type"] = str(doc["question_type"]).strip()
     doc["media_type"] = _doc_media_type(doc)
     doc["answer_type"] = _doc_answer_type(doc)
     doc["llm_extraction_used"] = False
@@ -587,6 +588,7 @@ def vsibench_process_results(doc, results):
 
 def _ensure_answer_type_column(results):
     results = results.copy()
+    results["question_type"] = results["question_type"].apply(lambda value: str(value).strip())
     results["answer_type"] = results.apply(_doc_answer_type, axis=1)
     return results
 
