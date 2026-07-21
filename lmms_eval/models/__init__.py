@@ -52,6 +52,7 @@ AVAILABLE_MODELS = {
     "xcomposer2_4KHD": "XComposer2_4KHD",
     "xcomposer2d5": "XComposer2D5",
     "qwen2vl": "Qwen2VL",
+    "qwen2_5vl_32b": "Qwen2_5VL_32B",
     "qwen2_5vl_72b_api": "Qwen2_5VL_72B_API",
     "qwen3vl": "Qwen3VL",
     "qwen3vl_32b": "Qwen3VL_32B",

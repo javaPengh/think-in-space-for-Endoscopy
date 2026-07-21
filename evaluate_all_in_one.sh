@@ -3,7 +3,10 @@
 set -e
 
 #export VSI_DEBUG_PROMPT_DIR=docs/medmo_8b_next_prompt_debug
-export DASHSCOPE_API_KEY="sk-68a39855d0ec4d8ea23999d4d5ccd306"
+export VSI_LLM_EXTRACTOR_ENABLED=true
+export DASHSCOPE_API_KEY="sk-ws-H.EDYYMEH.mwMo.MEUCIDqscgByDOgARQKpRgGKn8uFf0j9wO2Hyb1pT35GOBv_AiEA0e9ArAhK9M73mZHwfcsLi8PFh2In_n4xFrHMtFc9blc"
+export VSI_LLM_EXTRACTOR_BASE_URL="https://ws-t89vr72sskvzw278.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+export VSI_LLM_EXTRACTOR_MODEL="qwen3.7-plus"
 export NCCL_P2P_DISABLE=1
 export NCCL_IB_DISABLE=1
 
@@ -33,7 +36,7 @@ natural_gen_kwargs=""
 run_note=""
 data_version="${VSI_DATA_VERSION:-default}"
 
-available_models="gemini_3_1_pro,gemini_3_1_flash_lite,gpt5_4,llava_one_vision_1_5_8b,llava_next_video_7b_qwen2,internvl3_5_2b,internvl3_5_8b,qwen3vl_8b,qwen3vl_32b,medmo_8b_next,lingshu_32b,medgemma_27b,huatuogpt_vision_34b,colongpt,qwen2_5vl_72b_api,qwen3vl_235b_a22b_api,internvideo2_5_chat_8b"
+available_models="gemini_3_1_pro,gemini_3_1_flash_lite,gpt5_4,llava_one_vision_1_5_8b,llava_next_video_7b_qwen2,internvl3_5_2b,internvl3_5_8b,qwen2_5vl_32b,qwen3vl_8b,qwen3vl_32b,medmo_8b_next,lingshu_32b,medgemma_27b,huatuogpt_vision_34b,colongpt,qwen2_5vl_72b_api,qwen3vl_235b_a22b_api,internvideo2_5_chat_8b"
 IFS=',' read -r -a models <<<"$available_models"
 
 while [[ $# -gt 0 ]]; do
@@ -250,6 +253,12 @@ for model in "${models[@]}"; do
         # 8B 模型依然可以在多卡数据并行（num_processes=4）下良好运行
         model_args="pretrained=~/.cache/modelscope/hub/models/OpenGVLab/InternVL3_5-8B,modality=video,max_frames_num=$num_frames"
         ;;
+    "qwen2_5vl_32b")
+        model_family="qwen2_5vl_32b"
+        model="qwen2_5vl_32b_${num_frames}f"
+        model_args="pretrained=~/.cache/modelscope/hub/models/Qwen/Qwen2.5-VL-32B-Instruct,modality=video,max_frames_num=$num_frames,device_map=auto"
+        num_processes=1
+        ;;
     "qwen3vl_8b")
         model_family="qwen3vl"
         model="qwen3vl_8b_${num_frames}f"
@@ -306,7 +315,7 @@ for model in "${models[@]}"; do
     "internvideo2_5_chat_8b")
         model_family="internvideo2_5_chat_8b"
         model="internvideo2_5_chat_8b_${num_frames}f"
-        model_args="pretrained=~/.cache/modelscope/hub/models/OpenGVLab/InternVideo2_5_Chat_8B,modality=video,max_frames_num=$num_frames,device_map=auto"
+        model_args="pretrained=~/.cache/modelscope/hub/models/OpenGVLab/InternVideo2_5_Chat_8B,modality=video,max_frames_num=$num_frames"
         ;;
     *)
         echo "Unknown model: $model"
@@ -352,7 +361,7 @@ for model in "${models[@]}"; do
 
     if [ "$save_sample_frames" = "true" ]; then
         case "$model_family" in
-        "llava_onevision_1_5"|"internvl3_5"|"qwen3vl"|"qwen3vl_32b"|"medgemma_27b"|"huatuogpt_vision_34b"|"internvideo2_5_chat_8b")
+        "llava_onevision_1_5"|"internvl3_5"|"qwen2_5vl_32b"|"qwen3vl"|"qwen3vl_32b"|"medgemma_27b"|"huatuogpt_vision_34b"|"internvideo2_5_chat_8b")
             model_args="$model_args,save_sample_frames=true"
             model="${model}_saveframes"
             ;;

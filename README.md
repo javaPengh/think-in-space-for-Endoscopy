@@ -41,6 +41,7 @@ README 后文提到的 `C:\Users\a2818\Desktop\QA\总问答数据.xlsx` 是用�
 | `llava_next_video_7b_qwen2` | 本地模型 |
 | `internvl3_5_2b` | 本地模型 |
 | `internvl3_5_8b` | 本地模型 |
+| `qwen2_5vl_32b` | 本地模型 |
 | `qwen3vl_8b` | 本地模型 |
 | `qwen3vl_32b` | 本地模型 |
 | `lingshu_32b` | 本地模型 |
@@ -74,6 +75,14 @@ README 后文提到的 `C:\Users\a2818\Desktop\QA\总问答数据.xlsx` 是用�
 ```bash
 bash evaluate_all_in_one.sh --model qwen2_5vl_72b_api --benchmark vsibench --num_processes 1
 ```
+
+### Qwen2.5-VL-32B 本地评估
+
+```bash
+bash evaluate_all_in_one.sh --model qwen2_5vl_32b --benchmark vsibench --num_processes 1 --cuda_visible_devices 0,1,2,3
+```
+
+`qwen2_5vl_32b` 使用 `device_map=auto` 将模型分配到 `CUDA_VISIBLE_DEVICES` 指定的 GPU，因此固定以单进程启动；例如可用 `--cuda_visible_devices 0,1,2,3` 指定四张卡。
 
 ### 多进程评估
 
@@ -172,6 +181,57 @@ docs/eval_dashboard.html
 ```
 
 评估记录表会保留全部历史记录，并显示 `数据版本` 和 `备注` 列。Dashboard 默认展示最新评估记录对应的数据版本，图表按同一数据版本、同一模型和同一采样策略只取最新记录；如果需要对比不同采样数据源，可以在页面筛选器中切换数据版本或选择 `全部数据版本`。
+
+## 评估指标
+
+VSI-Bench 当前根据每条样本的 `answer_type` 选择计分指标；旧数据如果没有该字段，则根据 `question_type` 推断。所有聚合结果最终都会乘以 100，因此控制台、`results.json` 和 Dashboard 中展示的分数范围均为 0～100。
+
+### 题型与指标
+
+| 答案类型 | 当前题型 | 指标 |
+| --- | --- | --- |
+| 选择题 `multiple_choice` | `object_rel_direction`、`fold_rel_depth`、`route_planning`、`object_order`、`action_order` | Accuracy（精确匹配准确率） |
+| 数值题 `numeric` | `object_counting`、`action_counting`、`polyp_size_estimation` | `MRA:.5:.95:.05`（平均相对准确率） |
+
+选择题先把模型输出抽取并规范化成选项字母，再与 `ground_truth` 做不区分大小写的精确匹配：
+
+```text
+单题 Accuracy = 1，预测选项字母与真实答案相同
+单题 Accuracy = 0，其他情况
+题型 Accuracy = 该题型所有样本单题 Accuracy 的平均值
+```
+
+输出选项正文时，答案抽取器会尝试映射回对应的选项字母。无法提取出有效选项、提取结果不在合法选项范围内或答案错误时，该题得 0 分。
+
+数值题采用 VSI-Bench 的 Mean Relative Accuracy（MRA）。先计算相对误差：
+
+```text
+relative_error = |prediction - ground_truth| / |ground_truth|
+```
+
+然后依次使用 `0.50、0.55、0.60、...、0.95` 共 10 个准确率阈值判断：
+
+```text
+relative_error <= 1 - threshold
+```
+
+也就是对应允许的相对误差依次为 `50%、45%、40%、...、5%`。满足一个阈值得 1，否则得 0；10 次判断的平均值就是该数值题的单题 MRA。因此单题 MRA 可能为 `0、0.1、0.2、...、1.0`，题型 MRA 是该题型所有样本单题 MRA 的平均值。真实值为 0 时，只有预测值也为 0 才按零误差处理；无法提取或转换成数值时，该题得 0 分。
+
+### 聚合分数
+
+当前会输出以下聚合结果：
+
+| 结果字段 | 含义 |
+| --- | --- |
+| `overall` | 全部样本单题得分的等权平均；选择题使用单题 Accuracy，数值题使用单题 MRA。它不是各题型分数的等权平均，样本更多的题型权重更高。 |
+| `image_overall` | 仅图像样本的单题得分等权平均；数据中没有图像样本时不输出。 |
+| `video_overall` | 仅视频样本的单题得分等权平均；数据中没有视频样本时不输出。 |
+| `{question_type}_accuracy` | 对应选择题题型的平均 Accuracy。 |
+| `{question_type}_MRA:.5:.95:.05` | 对应数值题题型的平均 MRA。 |
+
+默认八类题型的输出顺序为：`object_counting`、`action_counting`、`object_rel_direction`、`fold_rel_depth`、`route_planning`、`object_order`、`action_order`、`polyp_size_estimation`。如果同一个 `question_type` 同时包含多种 `answer_type`，结果字段会额外带上答案类型，避免不同指标重名。
+
+自然输出模式和直接输出模式最终都使用 `restricted_prediction` 计分。大模型兜底只负责从原始回答中提取模型已经明确给出的答案，不负责重新解题；提取失败的样本仍按 0 分处理。
 
 ## 自然输出和题目级对错矩阵
 
@@ -286,7 +346,7 @@ export VSI_DEBUG_PROMPT_LIMIT="${VSI_DEBUG_PROMPT_LIMIT:-5}"
 export VSI_DEBUG_PROMPT_DIR=docs/prompt_debug
 ```
 
-该功能目前只对继承 `lmms_eval/models/qwen3vl.py` 的本地模型适配器生效，包括 `qwen3vl`、`qwen3vl_32b`、`medmo_8b_next` 和 `lingshu_32b`。它不影响 API 模型，也不影响没有继承 `Qwen3VL` 的本地模型。
+该功能目前只对继承 `lmms_eval/models/qwen3vl.py` 的本地模型适配器生效，包括 `qwen2_5vl_32b`、`qwen3vl`、`qwen3vl_32b`、`medmo_8b_next` 和 `lingshu_32b`。它不影响 API 模型，也不影响没有继承 `Qwen3VL` 的本地模型。
 
 ## 水平基线
 

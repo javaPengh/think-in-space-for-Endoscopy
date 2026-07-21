@@ -252,7 +252,7 @@ class Qwen3VL(lmms):
             media_type = self._infer_media_type(media_path)
 
         if media_type not in {"image", "video"}:
-            raise ValueError(f"Unsupported media_type for Qwen3VL: {media_type}")
+            raise ValueError(f"Unsupported media_type for {self.MODEL_DISPLAY_NAME}: {media_type}")
         return media_type, media_path
 
     def _reset_token_usage(self):
@@ -467,10 +467,15 @@ class Qwen3VL(lmms):
         self._debug_dump_prompt(messages, text, gen_kwargs, media_type, debug_metadata)
         image_inputs, video_inputs = process_vision_info(messages)
         processor_kwargs = {"text": [text], "padding": True, "return_tensors": "pt"}
+        video_processor = getattr(self._processor, "video_processor", None)
         if image_inputs:
             processor_kwargs["images"] = image_inputs
         if video_inputs:
             processor_kwargs["videos"] = video_inputs
+            # Frames have already been sampled by this adapter. Qwen3VLVideoProcessor
+            # otherwise samples the supplied frame sequence again (16 frames became 4).
+            if getattr(video_processor, "do_sample_frames", False):
+                processor_kwargs["videos_kwargs"] = {"do_sample_frames": False}
         inputs = self._processor(**processor_kwargs)
         inputs = inputs.to(self._device)
         input_tokens = int(inputs.input_ids.numel())
