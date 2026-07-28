@@ -620,6 +620,7 @@ def _mean_row_score(rows):
 def _build_metric_outputs(results):
     results = _ensure_answer_type_column(results)
     output = {}
+    question_type_scores = []
 
     for question_type, per_question_type in results.groupby("question_type").groups.items():
         per_question_type = results.loc[per_question_type]
@@ -631,9 +632,13 @@ def _build_metric_outputs(results):
                 if metric in per_answer_type:
                     output[_result_key_for_question_type(question_type, answer_type, answer_type_count)] = per_answer_type[metric].mean()
 
-    overall = _mean_row_score(results)
-    if overall is not None:
-        output["overall"] = overall
+        if question_type in MCA_QUESTION_TYPES or question_type in NA_QUESTION_TYPES:
+            question_type_score = _mean_row_score(per_question_type)
+            if question_type_score is not None:
+                question_type_scores.append(question_type_score)
+
+    if question_type_scores:
+        output["overall"] = sum(question_type_scores) / len(question_type_scores)
     return output
 
 
@@ -652,12 +657,12 @@ def vsibench_aggregate_results(results):
 
     if "media_type" in results.columns:
         for media_type in ["image", "video"]:
-            per_media = results[results["media_type"] == media_type]
+            per_media = _ensure_answer_type_column(results[results["media_type"] == media_type])
             if len(per_media) == 0:
                 continue
-            per_media_output = _build_metric_outputs(per_media)
-            if "overall" in per_media_output:
-                aggregated_results[f"{media_type}_overall"] = _score_to_percent(per_media_output["overall"])
+            media_overall = _mean_row_score(per_media)
+            if media_overall is not None:
+                aggregated_results[f"{media_type}_overall"] = _score_to_percent(media_overall)
 
     for key in AGGREGATED_RESULT_KEYS:
         if key in output:

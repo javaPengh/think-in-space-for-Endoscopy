@@ -223,11 +223,13 @@ relative_error <= 1 - threshold
 
 | 结果字段 | 含义 |
 | --- | --- |
-| `overall` | 全部样本单题得分的等权平均；选择题使用单题 Accuracy，数值题使用单题 MRA。它不是各题型分数的等权平均，样本更多的题型权重更高。 |
+| `overall` | 8 个题型原始分的等权算术平均，每个题型权重均为 `1/8`，不会因题量不同而改变权重。 |
 | `image_overall` | 仅图像样本的单题得分等权平均；数据中没有图像样本时不输出。 |
 | `video_overall` | 仅视频样本的单题得分等权平均；数据中没有视频样本时不输出。 |
 | `{question_type}_accuracy` | 对应选择题题型的平均 Accuracy。 |
 | `{question_type}_MRA:.5:.95:.05` | 对应数值题题型的平均 MRA。 |
+
+完整评估应包含全部 8 个题型；使用 `--limit` 等方式只评估部分题型时，`overall` 仅对实际出现的题型等权平均。`image_overall` 和 `video_overall` 保持逐题平均，用于观察不同媒体类型上的样本级表现。
 
 默认八类题型的输出顺序为：`object_counting`、`action_counting`、`object_rel_direction`、`fold_rel_depth`、`route_planning`、`object_order`、`action_order`、`polyp_size_estimation`。如果同一个 `question_type` 同时包含多种 `answer_type`，结果字段会额外带上答案类型，避免不同指标重名。
 
@@ -396,3 +398,5 @@ python tools/update_eval_dashboard.py logs/YYYYMMDD/vsibench/path/to/results.jso
 | 常数基线MRA | 取该类别全部真值的中位数作为固定预测值，对每道题都预测这个常数，再按 VSI-Bench 的 MRA 阈值规则计算平均分并乘以 100。 |
 
 这些基线不是模型结果，只是“地板线”：用来判断模型在某个题型上是否明显超过随机猜、答案分布偏置，或数值题的常数猜测策略。
+
+随机基线、频率基线和数值题常数基线仅在 Dashboard 中作为参考线展示，不参与 `overall` 计算。
