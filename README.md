@@ -30,26 +30,39 @@ README 后文提到的 `C:\Users\a2818\Desktop\QA\总问答数据.xlsx` 是用�
 
 ## 支持模型
 
-当前 `evaluate_all_in_one.sh` 支持以下模型名：
+评估模型列表如下（含待接入模型）；实际可运行的模型名以 `evaluate_all_in_one.sh` 为准：
 
-| 模型名 | 类型 |
-| --- | --- |
-| `gemini_3_1_pro` | API |
-| `gemini_3_1_flash_lite` | API |
-| `gpt5_4` | API |
-| `llava_one_vision_1_5_8b` | 本地模型 |
-| `llava_next_video_7b_qwen2` | 本地模型 |
-| `internvl3_5_2b` | 本地模型 |
-| `internvl3_5_8b` | 本地模型 |
-| `qwen2_5vl_32b` | 本地模型 |
-| `qwen3vl_8b` | 本地模型 |
-| `qwen3vl_32b` | 本地模型 |
-| `lingshu_32b` | 本地模型 |
-| `medgemma_27b` | 本地模型 |
-| `huatuogpt_vision_34b` | 本地模型 |
-| `qwen2_5vl_72b_api` | API |
-| `qwen3vl_235b_a22b_api` | API |
-| `internvideo2_5_chat_8b` | 本地模型 |
+| 模型名                            | 类型 |
+|--------------------------------| --- |
+| `gemini_3_1_pro`               | API |
+| `gemini_3_8_flash`             | API |
+| `gemini_3_1_flash_lite`        | API |
+| `gpt6_astra`                   | API |
+| `gpt5_4`                       | API |
+| `llava_one_vision_1_5_4b`      | 本地模型 |
+| `llava_one_vision_1_5_8b`      | 本地模型 |
+| `internvl3_5_2b`               | 本地模型 |
+| `internvl3_5_8b`               | 本地模型 |
+| `internvl3_5_14b`              | 本地模型 |
+| `internvl3_5_38b`              | 本地模型 |
+| `qwen2_5vl_7b`                 | 本地模型 |
+| `qwen2_5vl_32b`                | 本地模型 |
+| `qwen3vl_2b`                   | 本地模型 |
+| `qwen3vl_8b`                   | 本地模型 |
+| `qwen3vl_32b`                  | 本地模型 |
+| `lingshu_7b`                   | 本地模型 |
+| `lingshu_32b`                  | 本地模型 |
+| `medgemma_4b`                  | 本地模型 |
+| `medgemma_27b`                 | 本地模型 |
+| `gemma_3_4b`                   | 本地模型 |
+| `gemma_3_27b`                  | 本地模型 |
+| `huatuogpt_vision_7b`          | 本地模型 |
+| `huatuogpt_vision_34b`         | 本地模型 |
+| `qwen2_5vl_72b_api`            | API |
+| `qwen3vl_235b_a22b_api`        | API |
+| `internvideo2_5_chat_8b`(暂时不评) | 本地模型 |
+
+`gpt6_astra`（GPT-6 Astra）和 `gemini_3_8_flash`（Gemini 3.8 Flash）为新增评估计划，尚未接入评估脚本。
 
 可以用逗号一次评估多个模型，也可以使用 `--model all` 评估全部支持模型。
 

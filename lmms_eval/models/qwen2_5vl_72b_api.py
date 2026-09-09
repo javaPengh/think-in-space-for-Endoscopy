@@ -13,6 +13,7 @@ import requests
 from accelerate import Accelerator
 from accelerate.utils import InitProcessGroupKwargs
 from decord import VideoReader, cpu
+from loguru import logger as eval_logger
 from PIL import Image
 from tqdm import tqdm
 
@@ -22,7 +23,7 @@ from lmms_eval.api.registry import register_model
 from lmms_eval.models.model_utils.blind_eval import is_blind_mode, normalize_visual_input_mode, strip_visual_context
 from lmms_eval.models.model_utils.question_id import get_question_key
 from lmms_eval.models.model_utils.token_usage import TokenUsageTracker, extract_openai_chat_usage
-from loguru import logger as eval_logger
+from lmms_eval.models.model_utils.video_sampling import calculate_effective_fps
 
 DEFAULT_GEN_KWARGS = dict(
     max_new_tokens=1024,
@@ -192,6 +193,9 @@ class Qwen2_5VL_72B_API(lmms):
         total_frames = len(vr)
         if total_frames <= 0:
             raise ValueError(f"Video has no frames: {video_path}")
+        source_fps = float(vr.get_avg_fps())
+        if not np.isfinite(source_fps) or source_fps <= 0:
+            raise ValueError(f"Cannot sample video because its average FPS is invalid: {source_fps}")
 
         if self.video_sampling_strategy == "specific":
             question_key = self._get_question_key(doc_id, task, split)
@@ -204,14 +208,11 @@ class Qwen2_5VL_72B_API(lmms):
                 raise ValueError(f"Specific frame indices not found or empty for question ID: {question_key} (doc_id: {doc_id}) in {task}")
             frame_indices = [int(index) for index in found_indices]
         elif self.video_sampling_strategy == "fps":
-            avg_fps = float(vr.get_avg_fps())
-            if avg_fps <= 0:
-                raise ValueError(f"Cannot use fps sampling because video avg_fps is invalid: {avg_fps}")
-            duration = total_frames / avg_fps
+            duration = total_frames / source_fps
             timestamps = np.arange(0, duration, 1.0 / self.video_sample_fps)
             if len(timestamps) == 0:
                 timestamps = np.array([0.0])
-            frame_indices = np.floor(timestamps * avg_fps).astype(int).tolist()
+            frame_indices = np.floor(timestamps * source_fps).astype(int).tolist()
             frame_indices = list(dict.fromkeys(frame_indices))
         else:
             sample_count = min(max(self.max_frames_num, 4), 512)
@@ -222,8 +223,9 @@ class Qwen2_5VL_72B_API(lmms):
             eval_logger.warning(f"Qwen2.5-VL video-list input requires at least 4 frames; padding {video_path} from {len(frame_indices)} to 4 frames.")
             frame_indices.extend([frame_indices[-1]] * (4 - len(frame_indices)))
 
+        effective_fps = calculate_effective_fps(frame_indices, source_fps)
         frames = vr.get_batch(frame_indices).asnumpy()
-        return frame_indices, frames
+        return frame_indices, frames, effective_fps
 
     def _build_payload(self, content, gen_kwargs):
         payload = {
@@ -289,7 +291,7 @@ class Qwen2_5VL_72B_API(lmms):
             "total_tokens": self._get_obj_value(usage, "total_tokens"),
         }
 
-    def _cache_key(self, contexts, gen_kwargs, media_type, media_path, frame_indices=None):
+    def _cache_key(self, contexts, gen_kwargs, media_type, media_path, frame_indices=None, payload_fps=None):
         key_payload = {
             "model": self.model_version,
             "contexts": contexts,
@@ -304,6 +306,8 @@ class Qwen2_5VL_72B_API(lmms):
             "video_fps": self.video_fps,
             "visual_input_mode": self.visual_input_mode,
         }
+        if payload_fps is not None:
+            key_payload["payload_fps"] = payload_fps
         return hashlib.sha256(json.dumps(key_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
     def _save_cache(self):
@@ -427,11 +431,11 @@ class Qwen2_5VL_72B_API(lmms):
                 video_path = str(media_path)
                 unique_video_name = os.path.join(*video_path.split(os.sep)[-3:])
                 pbar.set_postfix_str(f"Video: {unique_video_name}")
-                payload_fps = self.video_sample_fps if self.video_sampling_strategy == "fps" else self.video_fps
                 if self.video_input_mode == "file":
+                    payload_fps = self.video_sample_fps if self.video_sampling_strategy == "fps" else self.video_fps
                     content = self._build_dashscope_messages(video_path, contexts, payload_fps)
                 else:
-                    frame_indices, frames = self._sample_video_frames(video_path, doc_id, task, split)
+                    frame_indices, frames, payload_fps = self._sample_video_frames(video_path, doc_id, task, split)
                     content = [
                         {
                             "type": "video",
@@ -443,7 +447,7 @@ class Qwen2_5VL_72B_API(lmms):
             else:
                 raise NotImplementedError(f"Unsupported media_type: {media_type}")
 
-            cache_key = self._cache_key(contexts, gen_kwargs, media_type, media_path, frame_indices)
+            cache_key = self._cache_key(contexts, gen_kwargs, media_type, media_path, frame_indices, payload_fps if media_type == "video" else None)
             if cache_key in self.response_cache:
                 response_text = self.response_cache[cache_key]
             else:

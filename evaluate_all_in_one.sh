@@ -4,9 +4,16 @@ set -e
 
 #export VSI_DEBUG_PROMPT_DIR=docs/medmo_8b_next_prompt_debug
 export VSI_LLM_EXTRACTOR_ENABLED=true
-export DASHSCOPE_API_KEY="sk-ws-H.EDYYMEH.mwMo.MEUCIDqscgByDOgARQKpRgGKn8uFf0j9wO2Hyb1pT35GOBv_AiEA0e9ArAhK9M73mZHwfcsLi8PFh2In_n4xFrHMtFc9blc"
-export VSI_LLM_EXTRACTOR_BASE_URL="https://ws-t89vr72sskvzw278.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
-export VSI_LLM_EXTRACTOR_MODEL="qwen3.7-plus"
+#export DASHSCOPE_API_KEY="sk-ws-H.EDYYMEH.mwMo.MEUCIDqscgByDOgARQKpRgGKn8uFf0j9wO2Hyb1pT35GOBv_AiEA0e9ArAhK9M73mZHwfcsLi8PFh2In_n4xFrHMtFc9blc"
+#export VSI_LLM_EXTRACTOR_BASE_URL="https://ws-t89vr72sskvzw278.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+#export VSI_LLM_EXTRACTOR_MODEL="qwen3.7-plus"
+export VSI_LLM_EXTRACTOR_BASE_URL="https://api.siliconflow.cn/v1"
+export VSI_LLM_EXTRACTOR_MODEL="Qwen/Qwen3.5-27B"
+if [ -z "${VSI_LLM_EXTRACTOR_API_KEY:-}" ]; then
+    echo "Error: VSI_LLM_EXTRACTOR_API_KEY 未设置"
+    exit 1
+fi
+
 export NCCL_P2P_DISABLE=1
 export NCCL_IB_DISABLE=1
 
@@ -223,7 +230,7 @@ for model in "${models[@]}"; do
     "llava_one_vision_1_5_8b")
         model_family="llava_onevision_1_5"
         model="llava_one_vision_1_5_8b_${num_frames}f"
-        model_args="pretrained=~/.cache/modelscope/hub/models/lmms-lab/LLaVA-OneVision-1.5-8B-Instruct,attn_implementation=flash_attention_2,conv_template=qwen_1_5,model_name=llava_qwen,max_frames_num=$num_frames,max_pixels=602112"
+        model_args="pretrained=~/.cache/modelscope/hub/models/lmms-lab/LLaVA-OneVision-1.5-8B-Instruct,attn_implementation=flash_attention_2,conv_template=qwen_1_5,model_name=llava_qwen,max_frames_num=$num_frames,max_pixels=301056"
         ;;
     "llava_one_vision_qwen2_72b_ov")
         model_family="llava_onevision"
@@ -284,7 +291,7 @@ for model in "${models[@]}"; do
     "medgemma_27b")
         model_family="medgemma_27b"
         model="medgemma_27b_${num_frames}f"
-        model_args="pretrained=~/.cache/modelscope/hub/models/google/medgemma-27b-it,modality=video,max_frames_num=$num_frames,device_map=auto"
+        model_args="pretrained=~/.cache/modelscope/hub/models/google/medgemma-27b-it,modality=video,max_frames_num=$num_frames,device_map=auto,attn_implementation=flash_attention_2"
         num_processes=1
         ;;
     "huatuogpt_vision_34b")
