@@ -444,7 +444,7 @@ def _call_llm_extractor(prompt):
     base_url = os.getenv("VSI_LLM_EXTRACTOR_BASE_URL") or os.getenv("DASHSCOPE_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1"
     api_url = os.getenv("VSI_LLM_EXTRACTOR_API_URL") or f"{base_url.rstrip('/')}/chat/completions"
     model = os.getenv("VSI_LLM_EXTRACTOR_MODEL", "qwen-plus")
-    timeout = int(os.getenv("VSI_LLM_EXTRACTOR_TIMEOUT", "60"))
+    timeout = int(os.getenv("VSI_LLM_EXTRACTOR_TIMEOUT", "120"))
     max_retries = int(os.getenv("VSI_LLM_EXTRACTOR_MAX_RETRIES", "2"))
     retry_sleep = float(os.getenv("VSI_LLM_EXTRACTOR_RETRY_SLEEP", "2"))
 
@@ -479,7 +479,7 @@ def _call_llm_extractor(prompt):
                 return None
             eval_logger.warning(f"VSI LLM answer extractor retrying after HTTP {error.code}: {error_body}")
             time.sleep(retry_sleep)
-        except (urllib.error.URLError, KeyError, IndexError, json.JSONDecodeError) as error:
+        except (urllib.error.URLError, TimeoutError, KeyError, IndexError, json.JSONDecodeError) as error:
             if attempt >= max_retries:
                 eval_logger.warning(f"VSI LLM answer extractor failed after {attempt + 1} attempts: {error}")
                 return None

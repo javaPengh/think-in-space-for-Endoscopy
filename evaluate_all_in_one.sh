@@ -43,7 +43,7 @@ natural_gen_kwargs=""
 run_note=""
 data_version="${VSI_DATA_VERSION:-default}"
 
-available_models="gemini_3_1_pro,gemini_3_1_flash_lite,gpt5_4,llava_one_vision_1_5_8b,llava_next_video_7b_qwen2,internvl3_5_2b,internvl3_5_8b,qwen2_5vl_32b,qwen3vl_8b,qwen3vl_32b,medmo_8b_next,lingshu_32b,medgemma_27b,huatuogpt_vision_34b,colongpt,qwen2_5vl_72b_api,qwen3vl_235b_a22b_api,internvideo2_5_chat_8b"
+available_models="gemini_3_1_pro,gemini_3_1_flash_lite,gpt5_4,llava_one_vision_1_5_4b,llava_one_vision_1_5_8b,llava_next_video_7b_qwen2,internvl3_5_2b,internvl3_5_8b,internvl3_5_14b,internvl3_5_38b,qwen2_5vl_7b,qwen2_5vl_32b,qwen3vl_2b,qwen3vl_8b,qwen3vl_32b,medmo_8b_next,lingshu_7b,lingshu_32b,medgemma_4b,medgemma_27b,gemma_3_4b,gemma_3_27b,huatuogpt_vision_34b,colongpt,qwen2_5vl_72b_api,qwen3vl_235b_a22b_api,internvideo2_5_chat_8b"
 IFS=',' read -r -a models <<<"$available_models"
 
 while [[ $# -gt 0 ]]; do
@@ -227,6 +227,11 @@ for model in "${models[@]}"; do
         num_processes=1
         launcher=python
         ;;
+    "llava_one_vision_1_5_4b")
+        model_family="llava_onevision_1_5"
+        model="llava_one_vision_1_5_4b_${num_frames}f"
+        model_args="pretrained=~/.cache/modelscope/hub/models/lmms-lab/LLaVA-OneVision-1.5-4B-Instruct,attn_implementation=flash_attention_2,conv_template=qwen_1_5,model_name=llava_qwen,max_frames_num=$num_frames,max_pixels=301056"
+        ;;
     "llava_one_vision_1_5_8b")
         model_family="llava_onevision_1_5"
         model="llava_one_vision_1_5_8b_${num_frames}f"
@@ -260,11 +265,33 @@ for model in "${models[@]}"; do
         # 8B 模型依然可以在多卡数据并行（num_processes=4）下良好运行
         model_args="pretrained=~/.cache/modelscope/hub/models/OpenGVLab/InternVL3_5-8B,modality=video,max_frames_num=$num_frames"
         ;;
+    "internvl3_5_14b")
+        model_family="internvl3_5"
+        model="internvl3_5_14b_${num_frames}f"
+        model_args="pretrained=~/.cache/modelscope/hub/models/OpenGVLab/InternVL3_5-14B,modality=video,max_frames_num=$num_frames,device_map=auto"
+        num_processes=1
+        ;;
+    "internvl3_5_38b")
+        model_family="internvl3_5"
+        model="internvl3_5_38b_${num_frames}f"
+        model_args="pretrained=~/.cache/modelscope/hub/models/OpenGVLab/InternVL3_5-38B,modality=video,max_frames_num=$num_frames,device_map=auto"
+        num_processes=1
+        ;;
+    "qwen2_5vl_7b")
+        model_family="qwen2_5vl_7b"
+        model="qwen2_5vl_7b_${num_frames}f"
+        model_args="pretrained=~/.cache/modelscope/hub/models/Qwen/Qwen2.5-VL-7B-Instruct,modality=video,max_frames_num=$num_frames"
+        ;;
     "qwen2_5vl_32b")
         model_family="qwen2_5vl_32b"
         model="qwen2_5vl_32b_${num_frames}f"
         model_args="pretrained=~/.cache/modelscope/hub/models/Qwen/Qwen2.5-VL-32B-Instruct,modality=video,max_frames_num=$num_frames,device_map=auto"
         num_processes=1
+        ;;
+    "qwen3vl_2b")
+        model_family="qwen3vl_2b"
+        model="qwen3vl_2b_${num_frames}f"
+        model_args="pretrained=~/.cache/modelscope/hub/models/Qwen/Qwen3-VL-2B-Instruct,modality=video,max_frames_num=$num_frames"
         ;;
     "qwen3vl_8b")
         model_family="qwen3vl"
@@ -282,16 +309,37 @@ for model in "${models[@]}"; do
         model="medmo_8b_next_${num_frames}f"
         model_args="pretrained=~/.cache/modelscope/hub/models/MBZUAI/MedMO-8B-Next,modality=video,max_frames_num=$num_frames"
         ;;
+    "lingshu_7b")
+        model_family="lingshu_7b"
+        model="lingshu_7b_${num_frames}f"
+        model_args="pretrained=~/.cache/modelscope/hub/models/lingshu-medical-mllm/Lingshu-7B,modality=video,max_frames_num=$num_frames"
+        ;;
     "lingshu_32b")
         model_family="lingshu_32b"
         model="lingshu_32b_${num_frames}f"
         model_args="pretrained=~/.cache/modelscope/hub/models/lingshu-medical-mllm/Lingshu-32B,modality=video,max_frames_num=$num_frames,device_map=auto"
         num_processes=1
         ;;
+    "medgemma_4b")
+        model_family="medgemma_4b"
+        model="medgemma_4b_${num_frames}f"
+        model_args="pretrained=~/.cache/modelscope/hub/models/google/medgemma-4b-it,modality=video,max_frames_num=$num_frames,attn_implementation=flash_attention_2"
+        ;;
     "medgemma_27b")
         model_family="medgemma_27b"
         model="medgemma_27b_${num_frames}f"
         model_args="pretrained=~/.cache/modelscope/hub/models/google/medgemma-27b-it,modality=video,max_frames_num=$num_frames,device_map=auto,attn_implementation=flash_attention_2"
+        num_processes=1
+        ;;
+    "gemma_3_4b")
+        model_family="gemma_3_4b"
+        model="gemma_3_4b_${num_frames}f"
+        model_args="pretrained=~/.cache/modelscope/hub/models/LLM-Research/gemma-3-4b-it,modality=video,max_frames_num=$num_frames,attn_implementation=flash_attention_2"
+        ;;
+    "gemma_3_27b")
+        model_family="gemma_3_27b"
+        model="gemma_3_27b_${num_frames}f"
+        model_args="pretrained=~/.cache/modelscope/hub/models/LLM-Research/gemma-3-27b-it,modality=video,max_frames_num=$num_frames,device_map=auto,attn_implementation=flash_attention_2"
         num_processes=1
         ;;
     "huatuogpt_vision_34b")
@@ -368,7 +416,7 @@ for model in "${models[@]}"; do
 
     if [ "$save_sample_frames" = "true" ]; then
         case "$model_family" in
-        "llava_onevision_1_5"|"internvl3_5"|"qwen2_5vl_32b"|"qwen3vl"|"qwen3vl_32b"|"medgemma_27b"|"huatuogpt_vision_34b"|"internvideo2_5_chat_8b")
+        "llava_onevision_1_5"|"internvl3_5"|"qwen2_5vl_7b"|"qwen2_5vl_32b"|"qwen3vl"|"qwen3vl_2b"|"qwen3vl_32b"|"medgemma_4b"|"medgemma_27b"|"gemma_3_4b"|"gemma_3_27b"|"huatuogpt_vision_34b"|"internvideo2_5_chat_8b")
             model_args="$model_args,save_sample_frames=true"
             model="${model}_saveframes"
             ;;
