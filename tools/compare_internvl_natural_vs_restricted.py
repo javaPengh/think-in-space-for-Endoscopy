@@ -64,10 +64,13 @@ def target_rows(rows):
 
 
 def path_kind(path_rows):
+    mode = path_rows[0].get("answer_mode")
+    if mode in {"natural", "restricted"}:
+        return "natural" if mode == "natural" else "direct"
     sample_path = path_rows[0].get("sample_path", "")
     if "_natural_" in sample_path:
         return "natural"
-    if any(row.get("natural_prediction") for row in path_rows):
+    if any(row.get("natural_prediction") for row in path_rows if row.get("schema_version", 0) < 2):
         return "natural"
     return "direct"
 
@@ -210,7 +213,7 @@ def build_comparison_rows(natural_rows, direct_rows):
                 "question": source.get("question", ""),
                 "ground_truth": source.get("ground_truth", ""),
                 "options": source.get("options", ""),
-                "natural_output": natural_row.get("natural_prediction", "") if natural_row else "",
+                "natural_output": natural_row.get("first_turn_prediction", natural_row.get("natural_prediction", "")) if natural_row else "",
                 "natural_answer": natural_answer,
                 "direct_answer": direct_answer,
                 "answer_same": str(answers_same).lower(),

@@ -16,6 +16,7 @@ from torchvision.transforms.functional import InterpolationMode
 from tqdm import tqdm
 from transformers import AutoConfig, AutoModel, AutoTokenizer
 
+from lmms_eval.api.answer_explanation import EXPLANATION_PROMPT, AnswerExplanation
 from lmms_eval.api.instance import Instance
 from lmms_eval.api.model import lmms
 from lmms_eval.api.registry import register_model
@@ -217,9 +218,12 @@ class InternVL3_5(lmms):
         keyframe_mapping_path: str = "data/keyframe_mapping.json",
         visual_input_mode: str = "visual",
         save_sample_frames: bool = False,
+        explain_answer: bool = False,
+        explanation_max_new_tokens: int = 2048,
         **kwargs,
     ):
         super().__init__()
+        self.answer_explanation = AnswerExplanation(explain_answer, explanation_max_new_tokens)
         self._uses_model_parallel_device_map = isinstance(device_map, str) and device_map in MODEL_PARALLEL_DEVICE_MAPS
         self.visual_input_mode = normalize_visual_input_mode(visual_input_mode)
         self.save_sample_frames = str(save_sample_frames).strip().lower() not in {"0", "false", "no", "none", ""}
@@ -461,7 +465,10 @@ class InternVL3_5(lmms):
         res = []
         pbar = tqdm(total=len(requests), disable=(self.rank != 0), desc="Model Responding")
 
-        for idx, (contexts, gen_kwargs, doc_to_visual, doc_id, task, split) in enumerate([reg.args for reg in requests]):
+        for request in requests:
+            contexts, gen_kwargs, doc_to_visual, doc_id, task, split = request.args
+            gen_kwargs = dict(gen_kwargs)
+            pixel_values, num_patches_list = None, None
             if "until" in gen_kwargs:
                 gen_kwargs.pop("until")
 
@@ -489,7 +496,7 @@ class InternVL3_5(lmms):
                     image_tokens = " ".join(["<image>"] * len(image_tensors))
                     question = image_tokens + "\n" + contexts
 
-                    response, _ = self.model.chat(
+                    response, history = self.model.chat(
                         self.tokenizer,
                         pixel_values,
                         question,
@@ -526,7 +533,7 @@ class InternVL3_5(lmms):
                     video_prefix = "".join([f"Frame{i+1}: <image>\n" for i in range(len(num_patches_list))])
                     question = video_prefix + contexts
 
-                    response, _ = self.model.chat(
+                    response, history = self.model.chat(
                         self.tokenizer,
                         pixel_values,
                         question,
@@ -538,7 +545,7 @@ class InternVL3_5(lmms):
                 else:
                     raise ValueError(f"Unsupported media_type: {media_type}")
             else:
-                response, _ = self.model.chat(
+                response, history = self.model.chat(
                     self.tokenizer,
                     None,
                     contexts,
@@ -548,6 +555,18 @@ class InternVL3_5(lmms):
                     return_history=True,
                 )
 
+            if self.answer_explanation.enabled:
+                explanation_kwargs = self.answer_explanation.generation_kwargs(gen_kwargs)
+                explanation, _ = self.model.chat(
+                    self.tokenizer,
+                    pixel_values,
+                    EXPLANATION_PROMPT,
+                    dict(explanation_kwargs),
+                    num_patches_list=num_patches_list,
+                    history=history,
+                    return_history=True,
+                )
+                self.answer_explanation.record(request, response, explanation, explanation_kwargs)
             res.append(response)
 
             if "pixel_values" in locals():

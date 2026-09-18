@@ -138,6 +138,8 @@ class CachingLMM:
         :param cache_db: str
             Path to cache db
         """
+        if getattr(getattr(lm, "answer_explanation", None), "enabled", False):
+            raise ValueError("Response caching is not supported with explain_answer: cached answers omit follow-up explanations.")
         self.lm = lm
         self.cache_db = cache_db
         if os.path.dirname(cache_db):

@@ -522,6 +522,8 @@ def evaluate(
                         "target_hash": hash_string(str(target)),
                     }
                     example.update(metrics)
+                    if any(getattr(req, "answer_explanations", None) for req in requests):
+                        example["answer_explanations"] = [getattr(req, "answer_explanations", []) for req in requests]
                     task_output.logged_samples.append(example)
                 for metric, value in metrics.items():
                     task_output.sample_metrics[(metric, filter_key)].append(value)

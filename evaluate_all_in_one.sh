@@ -36,6 +36,8 @@ visual_input_mode="visual"
 save_sample_frames="false"
 cuda_visible_devices="${CUDA_VISIBLE_DEVICES:-0}"
 answer_mode="restricted"
+explain_answer="false"
+explanation_max_new_tokens=2048
 gen_kwargs=""
 use_gen_kwargs=false
 natural_max_new_tokens="${VSI_NATURAL_MAX_NEW_TOKENS:-2048}"
@@ -113,6 +115,14 @@ while [[ $# -gt 0 ]]; do
         answer_mode="$2"
         shift 2
         ;;
+    --explain_answer)
+        explain_answer="$2"
+        shift 2
+        ;;
+    --explanation_max_new_tokens)
+        explanation_max_new_tokens="$2"
+        shift 2
+        ;;
     --natural_max_new_tokens)
         natural_max_new_tokens="$2"
         shift 2
@@ -175,6 +185,16 @@ fi
 
 natural_gen_kwargs="max_new_tokens=$natural_max_new_tokens,temperature=0,top_p=1.0,num_beams=1,do_sample=false"
 
+case "${explain_answer,,}" in
+"true"|"1"|"yes") explain_answer="true" ;;
+"false"|"0"|"no") explain_answer="false" ;;
+*) echo "Unsupported --explain_answer: $explain_answer (expected: true or false)"; exit 1 ;;
+esac
+if ! [[ "$explanation_max_new_tokens" =~ ^[1-9][0-9]*$ ]]; then
+    echo "--explanation_max_new_tokens must be a positive integer"
+    exit 1
+fi
+
 export VSI_VISUAL_INPUT_MODE="$visual_input_mode"
 export VSI_ANSWER_MODE="$answer_mode"
 export VSI_NATURAL_MAX_NEW_TOKENS="$natural_max_new_tokens"
@@ -194,6 +214,16 @@ echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES (gpu_count=$gpu_count)"
 
 if [ "${#models[@]}" -eq 1 ] && [ "${models[0]}" = "all" ]; then
     IFS=',' read -r -a models <<<"$available_models"
+fi
+
+# Validate the whole selection before starting any expensive model loads.
+if [ "$explain_answer" = "true" ]; then
+    for selected_model in "${models[@]}"; do
+        case "$selected_model" in
+        qwen3vl_2b|qwen3vl_8b|qwen3vl_32b|qwen2_5vl_7b|qwen2_5vl_32b|internvl3_5_2b|internvl3_5_8b|internvl3_5_14b|internvl3_5_38b) ;;
+        *) echo "--explain_answer is not supported for $selected_model"; exit 1 ;;
+        esac
+    done
 fi
 
 quote_arg() {
@@ -433,6 +463,11 @@ for model in "${models[@]}"; do
             gen_kwargs="$natural_gen_kwargs"
             use_gen_kwargs=true
         fi
+    fi
+
+    if [ "$explain_answer" = "true" ]; then
+        model_args="$model_args,explain_answer=true,explanation_max_new_tokens=$explanation_max_new_tokens"
+        model="${model}_explain"
     fi
 
     if [ "$launcher" = "python" ]; then

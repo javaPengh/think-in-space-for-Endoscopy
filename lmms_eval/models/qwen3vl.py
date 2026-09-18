@@ -18,6 +18,7 @@ from qwen_vl_utils import process_vision_info
 from tqdm import tqdm
 from transformers import AutoProcessor
 
+from lmms_eval.api.answer_explanation import AnswerExplanation
 from lmms_eval.api.instance import Instance
 from lmms_eval.api.model import lmms
 from lmms_eval.api.registry import register_model
@@ -56,9 +57,12 @@ class Qwen3VL(lmms):
         keyframe_mapping_path: str = "data/keyframe_mapping.json",
         visual_input_mode: str = "visual",
         save_sample_frames: bool = False,
+        explain_answer: bool = False,
+        explanation_max_new_tokens: int = 2048,
         **kwargs,
     ):
         super().__init__()
+        self.answer_explanation = AnswerExplanation(explain_answer, explanation_max_new_tokens)
 
         self.visual_input_mode = normalize_visual_input_mode(visual_input_mode)
         self.save_sample_frames = str(save_sample_frames).strip().lower() not in {"0", "false", "no", "none", ""}
@@ -451,7 +455,8 @@ class Qwen3VL(lmms):
         debug_dir.mkdir(parents=True, exist_ok=True)
         safe_task = re.sub(r"[^A-Za-z0-9_.-]+", "_", str((metadata or {}).get("task", "task")))
         safe_doc_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", str((metadata or {}).get("doc_id", self._debug_prompt_count)))
-        path = debug_dir / f"{self.TOKEN_USAGE_MODEL_NAME}_rank{self.rank}_{safe_task}_{safe_doc_id}.json"
+        stage_suffix = "_explanation" if (metadata or {}).get("stage") == "explanation" else ""
+        path = debug_dir / f"{self.TOKEN_USAGE_MODEL_NAME}_rank{self.rank}_{safe_task}_{safe_doc_id}{stage_suffix}.json"
         payload = {
             "model": self.TOKEN_USAGE_MODEL_NAME,
             "rank": self.rank,
@@ -512,7 +517,9 @@ class Qwen3VL(lmms):
         res = []
         pbar = tqdm(total=len(requests), disable=(self.rank != 0), desc="Model Responding")
 
-        for contexts, gen_kwargs, doc_to_visual, doc_id, task, split in [reg.args for reg in requests]:
+        for request in requests:
+            contexts, gen_kwargs, doc_to_visual, doc_id, task, split = request.args
+            gen_kwargs = dict(gen_kwargs)
             # Merge generation kwargs
             if "until" in gen_kwargs:
                 gen_kwargs.pop("until")
@@ -621,6 +628,15 @@ class Qwen3VL(lmms):
                 )
             else:
                 raise NotImplementedError
+            if self.answer_explanation.enabled:
+                explanation_kwargs = self.answer_explanation.generation_kwargs(gen_kwargs)
+                explanation = self._generate_from_messages(
+                    self.answer_explanation.messages(messages, output_text),
+                    explanation_kwargs,
+                    media_type,
+                    {"task": task, "split": split, "doc_id": doc_id, "stage": "explanation"},
+                )
+                self.answer_explanation.record(request, output_text, explanation, explanation_kwargs)
             res.append(output_text)
             pbar.update(1)
         pbar.close()

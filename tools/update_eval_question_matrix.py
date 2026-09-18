@@ -1,6 +1,5 @@
 import argparse
 import hashlib
-import html
 import json
 import re
 from datetime import datetime
@@ -10,9 +9,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DOCS_DIR = REPO_ROOT / "docs"
 DEFAULT_DATA_PATH = DOCS_DIR / "eval_question_matrix.json"
 DEFAULT_HTML_PATH = DOCS_DIR / "eval_question_matrix.html"
+TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "question_matrix.html"
+SCHEMA_VERSION = 2
 MRA_METRIC = "MRA:.5:.95:.05"
 SOURCE_ID_KEYS = ("question_id", "id", "ID", "Question_ID", "questionId")
 NUMERIC_QUESTION_TYPES = {
+    "counting(object)",
+    "counting(action)",
+    "polyp_size_estimation(ref)",
     "object_abs_distance",
     "object_counting",
     "action_counting",
@@ -33,17 +37,19 @@ def update_question_matrix_from_sample_file(sample_file_path, data_path=None, ht
     run_rows = build_question_rows(sample_data, sample_path)
     matrix_data = _read_matrix_data(data_path)
     sample_path_text = _relative_or_absolute(sample_path)
-    rows = [row for row in matrix_data.get("rows", []) if row.get("sample_path") != sample_path_text]
+    rows = [row for row in matrix_data.get("rows", []) if str(row.get("sample_path", "")).replace("\\", "/") != sample_path_text]
     rows.extend(run_rows)
     rows.sort(key=lambda row: (str(row.get("timestamp", "")), str(row.get("data_version", "default")), str(row.get("model", "")), str(row.get("sampling_strategy", "")), _sortable_doc_id(row.get("doc_id"))))
 
     matrix_data = {
+        "schema_version": SCHEMA_VERSION,
         "updated_at": datetime.now().isoformat(timespec="seconds"),
         "rows": rows,
     }
 
     data_path.parent.mkdir(parents=True, exist_ok=True)
     data_path.write_text(json.dumps(matrix_data, indent=2, ensure_ascii=False), encoding="utf-8")
+    html_path.parent.mkdir(parents=True, exist_ok=True)
     html_path.write_text(render_question_matrix_html(matrix_data), encoding="utf-8")
     return {"data_path": str(data_path), "html_path": str(html_path), "row_count": len(run_rows)}
 
@@ -52,6 +58,8 @@ def refresh_question_matrix_html(data_path=None, html_path=None):
     data_path = Path(data_path or DEFAULT_DATA_PATH).expanduser().resolve()
     html_path = Path(html_path or DEFAULT_HTML_PATH).expanduser().resolve()
     matrix_data = _read_matrix_data(data_path)
+    data_path.parent.mkdir(parents=True, exist_ok=True)
+    data_path.write_text(json.dumps(matrix_data, indent=2, ensure_ascii=False), encoding="utf-8")
     html_path.parent.mkdir(parents=True, exist_ok=True)
     html_path.write_text(render_question_matrix_html(matrix_data), encoding="utf-8")
     return {"data_path": str(data_path), "html_path": str(html_path), "row_count": len(matrix_data.get("rows", []))}
@@ -71,16 +79,18 @@ def build_question_rows(sample_data, sample_path):
     for log in sample_data.get("logs", []):
         score_doc = log.get("vsibench_score") or {}
         doc = log.get("doc") or {}
-        source_doc = score_doc if score_doc else doc
+        source_doc = {**doc, **score_doc}
         eval_doc_id = log.get("doc_id")
         doc_id = _source_doc_id(source_doc, doc, eval_doc_id)
         answer_type = source_doc.get("answer_type") or _infer_answer_type(source_doc.get("question_type"))
         score = _score_percent(score_doc, answer_type)
         is_correct = _choice_is_correct(score_doc, answer_type)
         is_scored = _numeric_is_scored(score, answer_type)
-        natural_prediction = score_doc.get("natural_prediction")
-        if natural_prediction is None:
-            natural_prediction = _first_scalar(log.get("resps"))
+        first_turn_prediction = _first_scalar(log.get("resps"))
+        if first_turn_prediction is None:
+            first_turn_prediction = score_doc.get("natural_prediction", "")
+        explanations = _explanation_records(log.get("answer_explanations"))
+        natural_prediction = explanations[0]["explanation"] if explanations else ""
 
         restricted_prediction = score_doc.get("restricted_prediction")
         extraction_was_attempted = score_doc and ("restricted_prediction" in score_doc or "prediction" in score_doc)
@@ -90,9 +100,10 @@ def build_question_rows(sample_data, sample_path):
             restricted_prediction = "提取失败"
         if restricted_prediction is None:
             restricted_prediction = _first_scalar(log.get("filtered_resps"))
-        row_id_seed = f"{sample_path_text}|{doc_id}"
+        row_id_seed = f"{sample_path_text}|{doc_id}|{eval_doc_id}"
         rows.append(
             {
+                "schema_version": SCHEMA_VERSION,
                 "row_id": hashlib.sha256(row_id_seed.encode("utf-8")).hexdigest()[:12],
                 "timestamp": timestamp,
                 "model": model,
@@ -102,8 +113,14 @@ def build_question_rows(sample_data, sample_path):
                 "question_type": source_doc.get("question_type", ""),
                 "answer_type": answer_type or "",
                 "doc_id": doc_id,
+                "eval_doc_id": eval_doc_id,
                 "question": source_doc.get("question", ""),
                 "natural_prediction": natural_prediction if natural_prediction is not None else "",
+                "first_turn_prediction": first_turn_prediction,
+                "answer_mode": _answer_mode(args, sample_path_text),
+                "answer_explanations": explanations,
+                "explanation_source": "second_turn" if explanations else "",
+                "explanation_status": _explanation_status(explanations),
                 "restricted_prediction": restricted_prediction if restricted_prediction is not None else "",
                 "ground_truth": source_doc.get("ground_truth", log.get("target", "")),
                 "options": _format_options(source_doc.get("options")),
@@ -117,518 +134,53 @@ def build_question_rows(sample_data, sample_path):
 
 
 def render_question_matrix_html(data):
-    rows = data.get("rows", [])
-    generated_at = html.escape(str(data.get("updated_at", "")))
-    data_version_options = _select_options(sorted({row.get("data_version", "default") for row in rows}))
-    model_options = _select_options(sorted({row.get("model", "") for row in rows if row.get("model")}))
-    sampling_options = _select_options(sorted({row.get("sampling_strategy", "") for row in rows if row.get("sampling_strategy")}))
-    matrix_rows_json = _json_for_script(rows)
-    row_count = len(rows)
-
-    return f"""<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>VSI-Bench 题目级对错矩阵</title>
-  <style>
-    :root {{
-      color-scheme: light;
-      --border: #d8dee8;
-      --header: #eef3fb;
-      --text: #162033;
-      --muted: #5c6b82;
-      --accent: #2563eb;
-      --ok: #047857;
-      --bad: #b91c1c;
-    }}
-    * {{ box-sizing: border-box; }}
-    body {{
-      margin: 0;
-      font-family: Arial, "Microsoft YaHei", sans-serif;
-      color: var(--text);
-      background: #f6f8fb;
-    }}
-    header {{
-      padding: 24px 28px 14px;
-      background: #fff;
-      border-bottom: 1px solid var(--border);
-    }}
-    h1 {{
-      margin: 0 0 8px;
-      font-size: 24px;
-      line-height: 1.25;
-      letter-spacing: 0;
-    }}
-    .meta {{
-      color: var(--muted);
-      font-size: 13px;
-    }}
-    main {{
-      padding: 18px 28px 28px;
-    }}
-    .toolbar {{
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      align-items: center;
-      margin-bottom: 14px;
-    }}
-    input, select {{
-      height: 34px;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      background: #fff;
-      padding: 0 10px;
-      color: var(--text);
-      font-size: 13px;
-    }}
-    input[type="search"] {{
-      min-width: 260px;
-      flex: 1 1 300px;
-    }}
-    .time-filter {{
-      display: flex;
-      gap: 6px;
-      align-items: center;
-      color: var(--muted);
-      font-size: 13px;
-    }}
-    .time-filter input {{
-      min-width: 182px;
-      flex: 0 0 182px;
-    }}
-    select {{
-      min-width: 160px;
-    }}
-    .table-wrap {{
-      overflow: auto;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      background: #fff;
-    }}
-    .bottom-scroll {{
-      position: fixed;
-      left: 28px;
-      right: 28px;
-      bottom: 12px;
-      z-index: 10;
-      height: 18px;
-      overflow-x: auto;
-      overflow-y: hidden;
-      border: 1px solid var(--border);
-      border-radius: 999px;
-      background: #fff;
-      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.16);
-      display: none;
-    }}
-    .bottom-scroll.visible {{
-      display: block;
-    }}
-    .bottom-scroll-inner {{
-      height: 1px;
-    }}
-    body.has-bottom-scroll {{
-      padding-bottom: 42px;
-    }}
-    table {{
-      width: 100%;
-      min-width: 1400px;
-      border-collapse: collapse;
-      table-layout: fixed;
-    }}
-    th, td {{
-      border-bottom: 1px solid var(--border);
-      padding: 10px 9px;
-      vertical-align: top;
-      font-size: 13px;
-      line-height: 1.45;
-    }}
-    th {{
-      position: sticky;
-      top: 0;
-      z-index: 1;
-      background: var(--header);
-      text-align: left;
-      white-space: nowrap;
-      color: #23314a;
-    }}
-    tr:last-child td {{
-      border-bottom: 0;
-    }}
-    .nowrap {{
-      white-space: nowrap;
-    }}
-    .text {{
-      white-space: pre-wrap;
-      overflow-wrap: anywhere;
-    }}
-    .status {{
-      display: inline-block;
-      min-width: 52px;
-      font-weight: 700;
-    }}
-    .status.ok {{ color: var(--ok); }}
-    .status.bad {{ color: var(--bad); }}
-    .score {{
-      color: var(--accent);
-      font-weight: 700;
-    }}
-    .empty {{
-      padding: 32px;
-      text-align: center;
-      color: var(--muted);
-    }}
-    .pager {{
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 12px;
-      color: var(--muted);
-      font-size: 13px;
-    }}
-    .pager-controls {{
-      display: flex;
-      gap: 8px;
-      align-items: center;
-    }}
-    button {{
-      height: 34px;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      background: #fff;
-      color: var(--text);
-      padding: 0 12px;
-      cursor: pointer;
-      font-size: 13px;
-    }}
-    button:disabled {{
-      color: #98a2b3;
-      cursor: not-allowed;
-    }}
-  </style>
-</head>
-<body>
-  <header>
-    <h1>VSI-Bench 题目级对错矩阵</h1>
-    <div class="meta">共 <span id="visible-count">{row_count}</span> / {row_count} 条记录，更新时间：{generated_at}</div>
-  </header>
-  <main>
-    <div class="toolbar">
-      <input id="search" type="search" placeholder="搜索题号、模型、题目、输出、真实答案">
-      <label class="time-filter" for="time-start">开始时间
-        <input id="time-start" type="datetime-local">
-      </label>
-      <label class="time-filter" for="time-end">结束时间
-        <input id="time-end" type="datetime-local">
-      </label>
-      <select id="data-version-filter">
-        <option value="">全部数据版本</option>
-        {data_version_options}
-      </select>
-      <select id="model-filter">
-        <option value="">全部模型</option>
-        {model_options}
-      </select>
-      <select id="sampling-filter">
-        <option value="">全部采样策略</option>
-        {sampling_options}
-      </select>
-    </div>
-    <div class="pager">
-      <div>当前页 <span id="page-info">0 / 0</span></div>
-      <div class="pager-controls">
-        <label for="page-size">每页</label>
-        <select id="page-size">
-          <option value="50">50</option>
-          <option value="100" selected>100</option>
-          <option value="200">200</option>
-          <option value="500">500</option>
-        </select>
-        <button id="prev-page" type="button">上一页</button>
-        <button id="next-page" type="button">下一页</button>
-      </div>
-    </div>
-    <div id="table-wrap" class="table-wrap">
-      <table id="matrix-table">
-        <colgroup>
-          <col style="width: 112px">
-          <col style="width: 120px">
-          <col style="width: 145px">
-          <col style="width: 100px">
-          <col style="width: 180px">
-          <col style="width: 80px">
-          <col style="width: 150px">
-          <col style="width: 86px">
-          <col style="width: 92px">
-          <col style="width: 68px">
-          <col style="width: 260px">
-          <col style="width: 300px">
-          <col style="width: 120px">
-          <col style="width: 110px">
-          <col style="width: 220px">
-        </colgroup>
-        <thead>
-          <tr>
-            <th>时间</th>
-            <th>数据版本</th>
-            <th>模型</th>
-            <th>采样策略</th>
-            <th>备注</th>
-            <th>题号</th>
-            <th>题型</th>
-            <th>答案类型</th>
-            <th>是否正确/得分</th>
-            <th>分数</th>
-            <th>原题目</th>
-            <th>自然输出</th>
-            <th>受限输出</th>
-            <th>真实答案</th>
-            <th>选项内容</th>
-          </tr>
-        </thead>
-        <tbody id="matrix-body"></tbody>
-      </table>
-      <div id="empty" class="empty" hidden>没有匹配记录</div>
-    </div>
-  </main>
-  <div id="bottom-scroll" class="bottom-scroll" aria-hidden="true">
-    <div id="bottom-scroll-inner" class="bottom-scroll-inner"></div>
-  </div>
-  <script id="matrix-data" type="application/json">{matrix_rows_json}</script>
-  <script>
-    const allRows = JSON.parse(document.getElementById("matrix-data").textContent || "[]");
-    let filteredRows = allRows;
-    let currentPage = 1;
-    let filterTimer = null;
-
-    function rowSearchText(row) {{
-      if (row._searchText !== undefined) return row._searchText;
-      row._searchText = [
-        row.timestamp,
-        row.data_version,
-        row.model,
-        row.sampling_strategy,
-        row.note,
-        row.doc_id,
-        row.question_type,
-        row.answer_type,
-        row.question,
-        row.natural_prediction,
-        row.restricted_prediction,
-        row.ground_truth,
-        row.options
-      ].map((value) => String(value ?? "")).join("\\n").toLowerCase()
-      return row._searchText;
-    }}
-
-    const matrixBody = document.getElementById("matrix-body");
-    const tableWrap = document.getElementById("table-wrap");
-    const matrixTable = document.getElementById("matrix-table");
-    const bottomScroll = document.getElementById("bottom-scroll");
-    const bottomScrollInner = document.getElementById("bottom-scroll-inner");
-    const search = document.getElementById("search");
-    const timeStart = document.getElementById("time-start");
-    const timeEnd = document.getElementById("time-end");
-    const dataVersionFilter = document.getElementById("data-version-filter");
-    const modelFilter = document.getElementById("model-filter");
-    const samplingFilter = document.getElementById("sampling-filter");
-    const pageSize = document.getElementById("page-size");
-    const pageInfo = document.getElementById("page-info");
-    const prevPage = document.getElementById("prev-page");
-    const nextPage = document.getElementById("next-page");
-    const visibleCount = document.getElementById("visible-count");
-    const empty = document.getElementById("empty");
-
-    function html(value) {{
-      return String(value ?? "").replace(/[&<>"']/g, (char) => ({{
-        "&": "&amp;",
-        "<": "&lt;",
-        ">": "&gt;",
-        '"': "&quot;",
-        "'": "&#39;"
-      }}[char]));
-    }}
-
-    function scoreText(row) {{
-      return row.score === null || row.score === undefined || row.score === "" ? "" : Number(row.score).toFixed(2);
-    }}
-
-    function status(row) {{
-      if (row.is_correct === true) return ["正确", "ok"];
-      if (row.is_correct === false) return ["错误", "bad"];
-      if (row.is_scored === true) return ["有得分", "ok"];
-      if (row.is_scored === false) return ["无得分", "bad"];
-      return ["", ""];
-    }}
-
-    function parseTimestamp(value) {{
-      const raw = String(value ?? "").trim();
-      if (!raw) return null;
-      const normalized = raw.replace(/T(\\d{{2}})-(\\d{{2}})-(\\d{{2}})/, "T$1:$2:$3");
-      let parsed = Date.parse(normalized);
-      if (!Number.isNaN(parsed)) return parsed;
-      parsed = Date.parse(normalized.slice(0, 19));
-      return Number.isNaN(parsed) ? null : parsed;
-    }}
-
-    function parseDateTimeInput(input) {{
-      if (!input.value) return null;
-      const parsed = Date.parse(input.value);
-      return Number.isNaN(parsed) ? null : parsed;
-    }}
-
-    function renderRow(row) {{
-      const [statusText, statusClass] = status(row);
-      return `<tr>
-  <td class="nowrap">${{html(row.timestamp)}}</td>
-  <td class="nowrap">${{html(row.data_version || "default")}}</td>
-  <td class="nowrap">${{html(row.model)}}</td>
-  <td class="nowrap">${{html(row.sampling_strategy)}}</td>
-  <td class="text">${{html(row.note)}}</td>
-  <td class="nowrap">${{html(row.doc_id)}}</td>
-  <td>${{html(row.question_type)}}</td>
-  <td class="nowrap">${{html(row.answer_type)}}</td>
-  <td class="nowrap"><span class="status ${{statusClass}}">${{html(statusText)}}</span></td>
-  <td class="nowrap score">${{html(scoreText(row))}}</td>
-  <td class="text">${{html(row.question)}}</td>
-  <td class="text">${{html(row.natural_prediction)}}</td>
-  <td class="text">${{html(row.restricted_prediction)}}</td>
-  <td class="text">${{html(row.ground_truth)}}</td>
-  <td class="text">${{html(row.options)}}</td>
-</tr>`;
-    }}
-
-    function applyFilters() {{
-      const keyword = search.value.trim().toLowerCase();
-      const dataVersion = dataVersionFilter.value;
-      const model = modelFilter.value;
-      const sampling = samplingFilter.value;
-      const startTime = parseDateTimeInput(timeStart);
-      const endTime = parseDateTimeInput(timeEnd);
-      filteredRows = allRows.filter((row) => {{
-        const matchesDataVersion = !dataVersion || row.data_version === dataVersion;
-        const matchesModel = !model || row.model === model;
-        const matchesSampling = !sampling || row.sampling_strategy === sampling;
-        const matchesKeyword = !keyword || rowSearchText(row).includes(keyword);
-        const rowTime = parseTimestamp(row.timestamp);
-        const matchesStart = startTime === null || rowTime === null || rowTime >= startTime;
-        const matchesEnd = endTime === null || rowTime === null || rowTime <= endTime;
-        return matchesDataVersion && matchesModel && matchesSampling && matchesKeyword && matchesStart && matchesEnd;
-      }});
-      currentPage = 1;
-      renderPage();
-    }}
-
-    function updateBottomScroll() {{
-      const tableWidth = Math.max(matrixTable.scrollWidth, tableWrap.scrollWidth);
-      const hasOverflow = tableWidth > tableWrap.clientWidth + 1;
-      bottomScroll.classList.toggle("visible", hasOverflow);
-      document.body.classList.toggle("has-bottom-scroll", hasOverflow);
-      bottomScrollInner.style.width = `${{tableWidth}}px`;
-      bottomScroll.scrollLeft = tableWrap.scrollLeft;
-    }}
-
-    function renderPage() {{
-      const perPage = Number(pageSize.value) || 100;
-      const total = filteredRows.length;
-      const totalPages = Math.max(1, Math.ceil(total / perPage));
-      currentPage = Math.min(Math.max(currentPage, 1), totalPages);
-      const start = (currentPage - 1) * perPage;
-      const pageRows = filteredRows.slice(start, start + perPage);
-      matrixBody.innerHTML = pageRows.map(renderRow).join("");
-      visibleCount.textContent = total;
-      pageInfo.textContent = total ? `${{start + 1}}-${{Math.min(start + perPage, total)}} / ${{total}}` : "0 / 0";
-      prevPage.disabled = currentPage <= 1;
-      nextPage.disabled = currentPage >= totalPages;
-      empty.hidden = total !== 0;
-      requestAnimationFrame(updateBottomScroll);
-    }}
-
-    function scheduleFilters() {{
-      clearTimeout(filterTimer);
-      filterTimer = setTimeout(applyFilters, 120);
-    }}
-
-    search.addEventListener("input", scheduleFilters);
-    timeStart.addEventListener("change", applyFilters);
-    timeEnd.addEventListener("change", applyFilters);
-    dataVersionFilter.addEventListener("change", applyFilters);
-    modelFilter.addEventListener("change", applyFilters);
-    samplingFilter.addEventListener("change", applyFilters);
-    pageSize.addEventListener("change", () => {{
-      currentPage = 1;
-      renderPage();
-    }});
-    prevPage.addEventListener("click", () => {{
-      currentPage -= 1;
-      renderPage();
-    }});
-    nextPage.addEventListener("click", () => {{
-      currentPage += 1;
-      renderPage();
-    }});
-    tableWrap.addEventListener("scroll", () => {{
-      bottomScroll.scrollLeft = tableWrap.scrollLeft;
-    }});
-    bottomScroll.addEventListener("scroll", () => {{
-      tableWrap.scrollLeft = bottomScroll.scrollLeft;
-    }});
-    window.addEventListener("resize", updateBottomScroll);
-    renderPage();
-  </script>
-</body>
-</html>
-"""
+    payload = dict(data, rows=[_normalize_row(row) for row in data.get("rows", [])], schema_version=SCHEMA_VERSION)
+    template = TEMPLATE_PATH.read_text(encoding="utf-8")
+    template = template.replace("__MATRIX_CSS__", TEMPLATE_PATH.with_suffix(".css").read_text(encoding="utf-8"))
+    template = template.replace("__MATRIX_JS__", TEMPLATE_PATH.with_suffix(".js").read_text(encoding="utf-8"))
+    return template.replace("__MATRIX_DATA__", _json_for_script(payload))
 
 
-def _render_row(row):
-    status_text, status_class = _status_label(row)
-    score = row.get("score")
-    score_text = "" if score is None else f"{float(score):.2f}"
-    return f"""<tr data-data-version="{_attr(row.get('data_version', 'default'))}" data-model="{_attr(row.get('model'))}" data-sampling="{_attr(row.get('sampling_strategy'))}">
-  <td class="nowrap">{_cell(row.get('timestamp'))}</td>
-  <td class="nowrap">{_cell(row.get('data_version', 'default'))}</td>
-  <td class="nowrap">{_cell(row.get('model'))}</td>
-  <td class="nowrap">{_cell(row.get('sampling_strategy'))}</td>
-  <td class="text">{_cell(row.get('note'))}</td>
-  <td class="nowrap">{_cell(row.get('doc_id'))}</td>
-  <td>{_cell(row.get('question_type'))}</td>
-  <td class="nowrap">{_cell(row.get('answer_type'))}</td>
-  <td class="nowrap"><span class="status {status_class}">{html.escape(status_text)}</span></td>
-  <td class="nowrap score">{html.escape(score_text)}</td>
-  <td class="text">{_cell(row.get('question'))}</td>
-  <td class="text">{_cell(row.get('natural_prediction'))}</td>
-  <td class="text">{_cell(row.get('restricted_prediction'))}</td>
-  <td class="text">{_cell(row.get('ground_truth'))}</td>
-  <td class="text">{_cell(row.get('options'))}</td>
-</tr>"""
+def _explanation_records(value):
+    """Keep request/repeat identity; never mistake an answer or prompt for an explanation."""
+    records = []
+    if not isinstance(value, list):
+        return records
+    for request_index, repeats in enumerate(value):
+        if not isinstance(repeats, list):
+            continue
+        for repeat_index, record in enumerate(repeats):
+            if isinstance(record, dict) and isinstance(record.get("explanation"), str):
+                records.append(dict(record, request_index=request_index, repeat_index=repeat_index))
+    return records
 
 
-def _status_label(row):
-    if row.get("is_correct") is True:
-        return "正确", "ok"
-    if row.get("is_correct") is False:
-        return "错误", "bad"
-    if row.get("is_scored") is True:
-        return "有得分", "ok"
-    if row.get("is_scored") is False:
-        return "无得分", "bad"
-    return "", ""
+def _explanation_status(records):
+    if not records:
+        return "missing"
+    return "available" if any(record.get("explanation", "").strip() for record in records) else "empty"
 
 
-def _select_options(values):
-    return "\n".join(f'<option value="{_attr(value)}">{_cell(value)}</option>' for value in values)
+def _answer_mode(args, path):
+    mode = args.get("answer_mode")
+    if mode in {"natural", "restricted"}:
+        return mode
+    return "natural" if "_natural" in str(args.get("log_samples_suffix", "")) or "_natural" in str(path) else "restricted"
 
 
-def _cell(value):
-    return html.escape("" if value is None else str(value))
-
-
-def _attr(value):
-    return html.escape("" if value is None else str(value), quote=True)
+def _normalize_row(row):
+    row = dict(row)
+    if row.get("schema_version", 0) < SCHEMA_VERSION:
+        # Historical natural_prediction contains first-turn text, not a follow-up.
+        row.setdefault("first_turn_prediction", row.get("natural_prediction", ""))
+        row["natural_prediction"] = ""
+        row["answer_explanations"] = []
+        row["explanation_source"] = ""
+        row["explanation_status"] = "missing"
+    row["schema_version"] = SCHEMA_VERSION
+    row.setdefault("data_version", "default")
+    row.setdefault("answer_mode", _answer_mode({}, row.get("sample_path", "")))
+    return row
 
 
 def _json_for_script(value):
@@ -641,9 +193,32 @@ def _read_matrix_data(data_path):
     with data_path.open("r", encoding="utf-8") as f:
         data = json.load(f)
     if isinstance(data, list):
-        return {"rows": data}
-    if "rows" not in data:
-        data["rows"] = []
+        data = {"rows": data}
+    rows = data.get("rows", [])
+    sources = {}
+    migrated = []
+    for row in rows:
+        path_text = row.get("sample_path", "")
+        if row.get("schema_version", 0) < SCHEMA_VERSION and path_text:
+            if path_text not in sources:
+                source = Path(path_text.replace("\\", "/"))
+                if not source.is_absolute():
+                    source = REPO_ROOT / source
+                sources[path_text] = None
+                if source.is_file():
+                    try:
+                        sample_data = json.loads(source.read_text(encoding="utf-8"))
+                        if isinstance(sample_data, dict) and isinstance(sample_data.get("logs"), list):
+                            sources[path_text] = build_question_rows(sample_data, source)
+                    except (OSError, ValueError):
+                        pass  # Keep historical answers even if their source is unavailable.
+                if sources[path_text] is not None:
+                    migrated.extend(sources[path_text])
+            if sources[path_text] is not None:
+                continue
+        migrated.append(_normalize_row(row))
+    data["rows"] = migrated
+    data["schema_version"] = SCHEMA_VERSION
     return data
 
 
@@ -680,7 +255,7 @@ def _model_name_from_suffix(suffix):
     changed = True
     while changed:
         changed = False
-        for token in ["_natural", "_blind", "_file"]:
+        for token in ["_natural", "_blind", "_file", "_explain"]:
             if text.endswith(token):
                 text = text[: -len(token)]
                 changed = True
@@ -849,9 +424,9 @@ def _timestamp_from_path(path):
 
 def _relative_or_absolute(path):
     try:
-        return str(path.relative_to(REPO_ROOT))
+        return path.relative_to(REPO_ROOT).as_posix()
     except ValueError:
-        return str(path)
+        return path.as_posix()
 
 
 def main():
@@ -859,7 +434,7 @@ def main():
     parser.add_argument("sample_file", nargs="?", help="Path to a task sample JSON file, e.g. logs/.../vsibench.json")
     parser.add_argument("--data_path", default=str(DEFAULT_DATA_PATH), help="Output JSON path.")
     parser.add_argument("--html_path", default=str(DEFAULT_HTML_PATH), help="Output HTML path.")
-    parser.add_argument("--refresh_only", action="store_true", help="Regenerate HTML from the existing matrix JSON without reading a sample file.")
+    parser.add_argument("--refresh_only", action="store_true", help="Migrate existing matrix rows and regenerate HTML; reload legacy source logs when available.")
     args = parser.parse_args()
     if args.refresh_only:
         paths = refresh_question_matrix_html(args.data_path, args.html_path)

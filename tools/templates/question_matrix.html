@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VSI-Bench · 题目分析</title>
+  <style>__MATRIX_CSS__</style>
+</head>
+<body>
+  <header class="topbar"><a class="brand" href="#"><span class="brand-icon">V</span> Thinking in Space <span class="brand-divider">/</span><span class="brand-section">评估分析</span></a><span class="tag">VSI-Bench</span></header>
+  <main>
+    <section class="heading">
+      <div><div class="eyebrow">QUESTION ANALYSIS</div><h1>每一道题，都值得看清楚。</h1><p>对照首次答案，阅读回答后的解释，定位需要进一步分析的样本。</p></div>
+      <button id="export" class="button primary" type="button">导出筛选结果 <span aria-hidden="true">↗</span></button>
+    </section>
+    <section class="stats" aria-label="筛选结果统计">
+      <article class="stat"><span>评估记录</span><strong id="stat-records">—</strong><small id="stat-scope">当前筛选范围</small></article>
+      <article class="stat"><span>选择题正确率</span><strong id="stat-accuracy">—</strong><small id="stat-choice-count">仅统计已评分选择题</small></article>
+      <article class="stat"><span>数值题平均 MRA</span><strong id="stat-mra">—</strong><small id="stat-numeric-count">不按二元对错统计</small></article>
+      <article class="stat"><span>选择题错误 / 数值零分</span><strong id="stat-errors" class="red">—</strong><small>优先检查的样本记录</small></article>
+      <article class="stat"><span>第二轮解释覆盖率</span><strong id="stat-coverage">—</strong><small id="stat-explanations">仅统计非空的第二轮解释</small></article>
+    </section>
+    <section class="workspace">
+      <div class="workspace-header"><div><h2>题目对错矩阵</h2><p id="dataset-summary">正在读取数据…</p></div><div class="view-switch" role="group" aria-label="显示方式"><button id="view-list" type="button" aria-pressed="true">逐题记录</button><button id="view-matrix" type="button" aria-pressed="false">模型对照</button></div></div>
+      <div class="filters">
+        <label class="search-field"><span>搜索</span><input id="search" type="search" placeholder="题号、问题、答案或解释…"></label>
+        <label><span>数据版本</span><select id="version-filter"><option value="">全部版本</option></select></label>
+        <label><span>模型</span><select id="model-filter"><option value="">全部模型</option></select></label>
+        <label><span>题型</span><select id="type-filter"><option value="">全部题型</option></select></label>
+        <label><span>评分结果</span><select id="status-filter"><option value="">全部结果</option><option value="attention">选择题错误 / 数值零分</option><option value="correct">选择题正确</option><option value="incorrect">选择题错误</option><option value="zero">数值题零分</option><option value="partial">数值题部分得分</option><option value="full">数值题满分</option><option value="unscored">未评分</option></select></label>
+        <label><span>第二轮解释</span><select id="explanation-filter"><option value="">全部状态</option><option value="available">已有解释</option><option value="missing">未生成解释</option><option value="empty">返回空解释</option></select></label>
+      </div>
+      <div class="filter-footer"><details class="advanced"><summary>更多条件</summary><div class="advanced-fields"><label><span>采样策略</span><select id="sampling-filter"><option value="">全部策略</option></select></label><label><span>首轮输出模式</span><select id="mode-filter"><option value="">全部模式</option><option value="restricted">直接回答</option><option value="natural">首轮自然回答</option></select></label><label><span>开始时间</span><input id="time-start" type="datetime-local"></label><label><span>结束时间</span><input id="time-end" type="datetime-local"></label></div></details><button id="reset" class="text-button" type="button">重置筛选</button></div>
+      <div class="scope-note"><span class="info-mark" aria-hidden="true">i</span><span>评分基于第一轮答案。“自然输出”仅指第二轮解释；历史首轮 CoT 输出保留在详情中，不作为解释填充。</span></div>
+      <div id="view-note" class="view-note"></div>
+      <div class="result-bar"><span id="result-count" role="status" aria-live="polite"></span><label class="sort-label">排序 <select id="sort"><option value="newest">最新运行优先</option><option value="question">题号升序</option><option value="score">低分优先</option><option value="model">模型名称</option></select></label></div>
+      <div class="table-wrap" tabindex="0" aria-label="题目结果，可横向滚动"><table id="results-table"><thead id="results-head"></thead><tbody id="results-body"></tbody></table><div id="empty" class="empty" hidden><span aria-hidden="true">∅</span><h3>没有符合条件的记录</h3><p>尝试减少筛选条件，或重新导入评估日志。</p><button id="empty-reset" class="button" type="button">重置筛选</button></div></div>
+      <div class="pagination"><span id="page-info"></span><div><label>每页 <select id="page-size"><option value="25">25</option><option value="50" selected>50</option><option value="100">100</option></select></label><button id="prev" class="button" type="button">← 上一页</button><button id="next" class="button" type="button">下一页 →</button></div></div>
+    </section>
+    <footer><span>Thinking in Space · 错误模式分析</span><span id="updated-at"></span></footer>
+  </main>
+  <dialog id="detail" aria-labelledby="detail-title"><div class="detail-shell"><div class="detail-top"><div><div class="eyebrow">SAMPLE DETAIL</div><h2 id="detail-title">样本详情</h2></div><button id="close-detail" class="button" type="button" aria-label="关闭详情">关闭 ×</button></div><div id="detail-content"></div><div class="detail-nav"><button id="detail-prev" class="button" type="button">← 上一条</button><span id="detail-position"></span><button id="detail-next" class="button" type="button">下一条 →</button></div></div></dialog>
+  <noscript><p class="empty">请启用 JavaScript 以查看和筛选题目矩阵。</p></noscript>
+  <script id="matrix-data" type="application/json">__MATRIX_DATA__</script>
+  <script>__MATRIX_JS__</script>
+</body>
+</html>
