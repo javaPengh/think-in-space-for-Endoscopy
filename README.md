@@ -60,7 +60,7 @@ README 后文提到的 `C:\Users\a2818\Desktop\QA\总问答数据.xlsx` 是用�
 | `huatuogpt_vision_34b`                | 本地模型 |
 | `qwen2_5vl_72b_api`                   | API |
 | `qwen3vl_235b_a22b_api`               | API |
-| `internvideo2_5_chat_8b`(暂时不评) | 本地模型 |
+| `internvideo2_5_chat_8b`(暂不评,环境问题难解决) | 本地模型 |
 
 `gpt6_astra`（GPT-6 Astra）和 `gemini_3_8_flash`（Gemini 3.8 Flash）为新增评估计划，尚未接入评估脚本。
 
@@ -96,6 +96,18 @@ bash evaluate_all_in_one.sh --model qwen2_5vl_32b --benchmark vsibench --num_pro
 ```
 
 `qwen2_5vl_32b` 使用 `device_map=auto` 将模型分配到 `CUDA_VISIBLE_DEVICES` 指定的 GPU，因此固定以单进程启动；例如可用 `--cuda_visible_devices 0,1,2,3` 指定四张卡。
+
+### InternVL3.5-38B 四卡评估
+
+```bash
+bash evaluate_all_in_one.sh --model internvl3_5_38b --benchmark vsibench --data_version all --num_frames 32 --num_processes 1 --cuda_visible_devices 2,3,4,5 --limit 2
+```
+
+先短测，再去掉 `--limit 2` 运行完整评估。38B 使用单进程模型并行，启动脚本配置为 `device_map=balanced,vision_batch_size=1,gpu_memory_reserve_gib=4`：按各卡当前空闲显存减去 4 GiB 后分配权重，为视觉激活和语言模型 KV cache 留出空间；视觉编码按图块分批执行，保留全部采样帧、顺序及分辨率。显存预算不足时 Accelerate 可能将部分权重卸载到 CPU，速度会下降。
+
+原先 `balanced_low_0` 配合未限制的权重显存预算，可能把视觉编码器所在卡填满；视频 `batch_size=1` 也会一次产生 32 帧的视觉编码批量。只减少生成长度或清理 CUDA 缓存不能解决第一步视觉编码的峰值。启动日志会输出各卡权重预算和实际 `device_map`；日志中的 GPU 编号是 `CUDA_VISIBLE_DEVICES` 重映射后的进程内编号。
+
+直接使用 `lmms-eval` 时，可在 `--model_args` 中调整 `vision_batch_size`（正整数）及 `gpu_memory_reserve_gib`（正数，单位 GiB）。预留量是加载权重时的预算，不是运行时显存硬限制；更多图块或更长上下文仍可能需要更多预留空间。
 
 ### 多进程评估
 

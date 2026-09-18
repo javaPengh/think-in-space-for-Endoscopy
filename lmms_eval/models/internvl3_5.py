@@ -20,10 +20,12 @@ from lmms_eval.api.instance import Instance
 from lmms_eval.api.model import lmms
 from lmms_eval.api.registry import register_model
 from lmms_eval.models.model_utils.blind_eval import is_blind_mode, normalize_visual_input_mode, strip_visual_context
+from lmms_eval.models.model_utils.internvl_memory import enable_chunked_vision, inference_max_memory
 from lmms_eval.models.model_utils.question_id import get_question_key
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
+MODEL_PARALLEL_DEVICE_MAPS = {"auto", "balanced", "balanced_low_0", "sequential"}
 
 DEFAULT_GEN_KWARGS = dict(
     num_beams=1,
@@ -209,6 +211,8 @@ class InternVL3_5(lmms):
         batch_size: str = "1",
         max_frames_num: int = 32,
         video_max_num: int = 1,
+        vision_batch_size: int = 1,
+        gpu_memory_reserve_gib: float = 4,
         video_sampling_strategy: str = "uniform",
         keyframe_mapping_path: str = "data/keyframe_mapping.json",
         visual_input_mode: str = "visual",
@@ -216,12 +220,16 @@ class InternVL3_5(lmms):
         **kwargs,
     ):
         super().__init__()
+        self._uses_model_parallel_device_map = isinstance(device_map, str) and device_map in MODEL_PARALLEL_DEVICE_MAPS
         self.visual_input_mode = normalize_visual_input_mode(visual_input_mode)
         self.save_sample_frames = str(save_sample_frames).strip().lower() not in {"0", "false", "no", "none", ""}
         self.path = pretrained
         self.modality = modality
         self.max_frames_num = max_frames_num
         self.video_max_num = int(video_max_num)
+        self.vision_batch_size = int(vision_batch_size)
+        if self.vision_batch_size < 1:
+            raise ValueError(f"vision_batch_size must be >= 1, got {vision_batch_size}.")
         if self.video_max_num < 1:
             raise ValueError(f"video_max_num must be >= 1, got {video_max_num}.")
         self.sample_frames_version = None
@@ -237,20 +245,20 @@ class InternVL3_5(lmms):
             with open(keyframe_mapping_path, "r", encoding="utf-8") as f:
                 self.keyframe_mapping = json.load(f)
 
-        if device_map == "auto":
+        if self._uses_model_parallel_device_map:
+            max_memory = inference_max_memory(gpu_memory_reserve_gib)
+            eval_logger.info(f"InternVL weight memory budgets (bytes): {max_memory}; reserving {gpu_memory_reserve_gib} GiB per GPU for inference.")
             self._model = AutoModel.from_pretrained(
                 self.path,
                 torch_dtype=torch.bfloat16,
                 low_cpu_mem_usage=True,
                 trust_remote_code=True,
                 device_map=device_map,
+                max_memory=max_memory,
             ).eval()
-            try:
-                from accelerate.hooks import AlignDevicesHook, add_hook_to_module
-
-                add_hook_to_module(self._model.language_model.lm_head, AlignDevicesHook(execution_device=self._model.language_model.model.embed_tokens.weight.device))
-            except Exception as e:
-                eval_logger.debug(f"Could not add accelerate hook for internvl3.5: {e}")
+            # Preserve Accelerate's dispatch/offload hooks. Replacing the lm_head
+            # hook can move its weights onto an already full embedding GPU.
+            eval_logger.info(f"InternVL device map: {self._model.hf_device_map}")
         else:
             self._model = (
                 AutoModel.from_pretrained(
@@ -263,6 +271,8 @@ class InternVL3_5(lmms):
                 .cuda()
             )
 
+        enable_chunked_vision(self._model, self.vision_batch_size)
+        eval_logger.info(f"InternVL vision encoder batch size: {self.vision_batch_size} patches (all sampled frames retained).")
         self._config = AutoConfig.from_pretrained(self.path, trust_remote_code=True)
 
         self._tokenizer = AutoTokenizer.from_pretrained(self.path, trust_remote_code=True)
@@ -280,7 +290,7 @@ class InternVL3_5(lmms):
         if accelerator.num_processes > 1:
             self._device = torch.device(f"cuda:{accelerator.local_process_index}")
             self.device_map = f"cuda:{accelerator.local_process_index}"
-        elif accelerator.num_processes == 1 and device_map == "auto":
+        elif accelerator.num_processes == 1 and self._uses_model_parallel_device_map:
             self._device = torch.device(device)
             self.device_map = device_map
         else:
@@ -307,7 +317,7 @@ class InternVL3_5(lmms):
 
             self._rank = accelerator.local_process_index
             self._world_size = accelerator.num_processes
-        elif accelerator.num_processes == 1 and device_map == "auto":
+        elif accelerator.num_processes == 1 and self._uses_model_parallel_device_map:
             eval_logger.info(f"Using {accelerator.num_processes} process with model parallel device_map.")
             self._rank = 0
             self._world_size = 1
@@ -351,7 +361,29 @@ class InternVL3_5(lmms):
         return [j for i in input_list for j in i]
 
     def _cast_and_move_pixels(self, pixel_values: torch.Tensor):
-        return pixel_values.to(device=self.device, dtype=torch.bfloat16, non_blocking=True)
+        return pixel_values.to(device=self._vision_device(), dtype=torch.bfloat16, non_blocking=True)
+
+    def _vision_device(self):
+        """Return the device that owns InternVL's vision encoder under model parallelism."""
+        if not self._uses_model_parallel_device_map:
+            return self.device
+
+        device_map = getattr(self.model, "hf_device_map", {})
+        for module_name, mapped_device in device_map.items():
+            if module_name == "vision_model" or module_name.startswith("vision_model."):
+                if isinstance(mapped_device, int):
+                    return torch.device(f"cuda:{mapped_device}")
+                return torch.device(mapped_device)
+
+        vision_model = getattr(self.model, "vision_model", None)
+        if vision_model is not None:
+            try:
+                return next(vision_model.parameters()).device
+            except StopIteration:
+                pass
+
+        eval_logger.warning("Could not locate the InternVL vision encoder device; falling back to the configured input device.")
+        return self.device
 
     def _flatten_visuals(self, visual):
         if visual is None or visual == []:

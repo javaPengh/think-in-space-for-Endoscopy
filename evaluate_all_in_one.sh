@@ -274,7 +274,8 @@ for model in "${models[@]}"; do
     "internvl3_5_38b")
         model_family="internvl3_5"
         model="internvl3_5_38b_${num_frames}f"
-        model_args="pretrained=~/.cache/modelscope/hub/models/OpenGVLab/InternVL3_5-38B,modality=video,max_frames_num=$num_frames,device_map=auto"
+        # Reserve activation/KV-cache space on every GPU; do not skip GPU 0 for the large ViT.
+        model_args="pretrained=~/.cache/modelscope/hub/models/OpenGVLab/InternVL3_5-38B,modality=video,max_frames_num=$num_frames,device_map=balanced,vision_batch_size=1,gpu_memory_reserve_gib=4"
         num_processes=1
         ;;
     "qwen2_5vl_7b")
