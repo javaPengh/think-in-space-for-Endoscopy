@@ -97,6 +97,7 @@ class ExplanationTests(unittest.TestCase):
         model.visual_input_mode = "visual"
         model._get_media_info.return_value = ("video", "clip.mp4")
         model._sample_frame_indices.return_value = [0, 1]
+        model._build_video_content.side_effect = lambda frames, fps, *args: {"type": "video", "video": frames, "sample_fps": fps}
         model.max_pixels = None
         decord = MagicMock()
         decord.VideoReader.return_value.__len__.return_value = 2

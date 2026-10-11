@@ -21,6 +21,9 @@ AVAILABLE_MODELS = {
     "gemini3_1_pro": "Gemini3_1Pro",
     "gemma_3_4b": "Gemma3_4B",
     "gemma_3_27b": "Gemma3_27B",
+    "gemma_4_12b": "Gemma4_12B",
+    "gemma_4_26b_a4b": "Gemma4_26B_A4B",
+    "gemma_4_31b": "Gemma4_31B",
     "gpt5_4": "GPT5_4",
     "gpt4v": "GPT4V",
     "huatuogpt_vision_34b": "HuatuoGPTVision34B",
@@ -64,6 +67,9 @@ AVAILABLE_MODELS = {
     "qwen3vl_32b": "Qwen3VL_32B",
     "qwen3vl_235b_a22b_api": "Qwen3VL_235B_A22B_API",
     "internvl3_5": "InternVL3_5",
+    "internvl3_5_30b_a3b": "InternVL3_5_30B_A3B",
+    "qwen3_5_27b": "Qwen3_5_27B",
+    "qwen3_5_35b_a3b": "Qwen3_5_35B_A3B",
     "internvideo2_5_chat_8b": "InternVideo2_5_Chat",
 }
 

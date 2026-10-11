@@ -45,7 +45,7 @@ natural_gen_kwargs=""
 run_note=""
 data_version="${VSI_DATA_VERSION:-default}"
 
-available_models="gemini_3_1_pro,gemini_3_1_flash_lite,gpt5_4,llava_one_vision_1_5_4b,llava_one_vision_1_5_8b,llava_next_video_7b_qwen2,internvl3_5_2b,internvl3_5_8b,internvl3_5_14b,internvl3_5_38b,qwen2_5vl_7b,qwen2_5vl_32b,qwen3vl_2b,qwen3vl_8b,qwen3vl_32b,medmo_8b_next,lingshu_7b,lingshu_32b,medgemma_4b,medgemma_27b,gemma_3_4b,gemma_3_27b,huatuogpt_vision_34b,colongpt,qwen2_5vl_72b_api,qwen3vl_235b_a22b_api,internvideo2_5_chat_8b"
+available_models="gemini_3_1_pro,gemini_3_1_flash_lite,gpt5_4,llava_one_vision_1_5_4b,llava_one_vision_1_5_8b,llava_next_video_7b_qwen2,internvl3_5_2b,internvl3_5_8b,internvl3_5_14b,internvl3_5_38b,internvl3_5_30b_a3b,qwen2_5vl_7b,qwen2_5vl_32b,qwen3vl_2b,qwen3vl_8b,qwen3vl_32b,qwen3_5_27b,qwen3_5_35b_a3b,medmo_8b_next,lingshu_7b,lingshu_32b,medgemma_4b,medgemma_27b,gemma_3_4b,gemma_3_27b,gemma_4_12b,gemma_4_26b_a4b,gemma_4_31b,huatuogpt_vision_34b,colongpt,qwen2_5vl_72b_api,qwen3vl_235b_a22b_api,internvideo2_5_chat_8b"
 IFS=',' read -r -a models <<<"$available_models"
 
 while [[ $# -gt 0 ]]; do
@@ -220,7 +220,7 @@ fi
 if [ "$explain_answer" = "true" ]; then
     for selected_model in "${models[@]}"; do
         case "$selected_model" in
-        qwen3vl_2b|qwen3vl_8b|qwen3vl_32b|qwen2_5vl_7b|qwen2_5vl_32b|internvl3_5_2b|internvl3_5_8b|internvl3_5_14b|internvl3_5_38b) ;;
+        qwen3vl_2b|qwen3vl_8b|qwen3vl_32b|qwen2_5vl_7b|qwen2_5vl_32b|internvl3_5_2b|internvl3_5_8b|internvl3_5_14b|internvl3_5_38b|internvl3_5_30b_a3b|qwen3_5_27b|qwen3_5_35b_a3b|gemma_4_12b|gemma_4_26b_a4b|gemma_4_31b) ;;
         *) echo "--explain_answer is not supported for $selected_model"; exit 1 ;;
         esac
     done
@@ -308,6 +308,12 @@ for model in "${models[@]}"; do
         model_args="pretrained=~/.cache/modelscope/hub/models/OpenGVLab/InternVL3_5-38B,modality=video,max_frames_num=$num_frames,device_map=balanced,vision_batch_size=1,gpu_memory_reserve_gib=4"
         num_processes=1
         ;;
+    "internvl3_5_30b_a3b")
+        model_family="internvl3_5_30b_a3b"
+        model="internvl3_5_30b_a3b_${num_frames}f"
+        model_args="pretrained=~/.cache/modelscope/hub/models/OpenGVLab/InternVL3_5-30B-A3B,modality=video,max_frames_num=$num_frames,device_map=balanced,vision_batch_size=1,gpu_memory_reserve_gib=4"
+        num_processes=1
+        ;;
     "qwen2_5vl_7b")
         model_family="qwen2_5vl_7b"
         model="qwen2_5vl_7b_${num_frames}f"
@@ -333,6 +339,36 @@ for model in "${models[@]}"; do
         model_family="qwen3vl_32b"
         model="qwen3vl_32b_${num_frames}f"
         model_args="pretrained=~/.cache/modelscope/hub/models/Qwen/Qwen3-VL-32B-Instruct,modality=video,max_frames_num=$num_frames,device_map=auto"
+        num_processes=1
+        ;;
+    "qwen3_5_27b")
+        model_family="qwen3_5_27b"
+        model="qwen3_5_27b_${num_frames}f"
+        model_args="pretrained=~/.cache/modelscope/hub/models/Qwen/Qwen3.5-27B,modality=video,max_frames_num=$num_frames,device_map=auto"
+        num_processes=1
+        ;;
+    "qwen3_5_35b_a3b")
+        model_family="qwen3_5_35b_a3b"
+        model="qwen3_5_35b_a3b_${num_frames}f"
+        model_args="pretrained=~/.cache/modelscope/hub/models/Qwen/Qwen3.5-35B-A3B,modality=video,max_frames_num=$num_frames,device_map=auto"
+        num_processes=1
+        ;;
+    "gemma_4_12b")
+        model_family="gemma_4_12b"
+        model="gemma_4_12b_${num_frames}f"
+        model_args="pretrained=~/.cache/modelscope/hub/models/google/gemma-4-12B-it,modality=video,max_frames_num=$num_frames,device_map=auto"
+        num_processes=1
+        ;;
+    "gemma_4_26b_a4b")
+        model_family="gemma_4_26b_a4b"
+        model="gemma_4_26b_a4b_${num_frames}f"
+        model_args="pretrained=~/.cache/modelscope/hub/models/google/gemma-4-26B-A4B-it,modality=video,max_frames_num=$num_frames,device_map=auto"
+        num_processes=1
+        ;;
+    "gemma_4_31b")
+        model_family="gemma_4_31b"
+        model="gemma_4_31b_${num_frames}f"
+        model_args="pretrained=~/.cache/modelscope/hub/models/google/gemma-4-31B-it,modality=video,max_frames_num=$num_frames,device_map=auto"
         num_processes=1
         ;;
     "medmo_8b_next")
@@ -415,7 +451,7 @@ for model in "${models[@]}"; do
     else
         if [ -n "$video_max_num" ]; then
             case "$model_family" in
-            "internvl3_5")
+            "internvl3_5"|"internvl3_5_30b_a3b")
                 model_args="$model_args,video_max_num=$video_max_num"
                 model="${model}_vmax${video_max_num}"
                 ;;
@@ -447,7 +483,7 @@ for model in "${models[@]}"; do
 
     if [ "$save_sample_frames" = "true" ]; then
         case "$model_family" in
-        "llava_onevision_1_5"|"internvl3_5"|"qwen2_5vl_7b"|"qwen2_5vl_32b"|"qwen3vl"|"qwen3vl_2b"|"qwen3vl_32b"|"medgemma_4b"|"medgemma_27b"|"gemma_3_4b"|"gemma_3_27b"|"huatuogpt_vision_34b"|"internvideo2_5_chat_8b")
+        "llava_onevision_1_5"|"internvl3_5"|"internvl3_5_30b_a3b"|"qwen2_5vl_7b"|"qwen2_5vl_32b"|"qwen3vl"|"qwen3vl_2b"|"qwen3vl_32b"|"qwen3_5_27b"|"qwen3_5_35b_a3b"|"gemma_4_12b"|"gemma_4_26b_a4b"|"gemma_4_31b"|"medgemma_4b"|"medgemma_27b"|"gemma_3_4b"|"gemma_3_27b"|"huatuogpt_vision_34b"|"internvideo2_5_chat_8b")
             model_args="$model_args,save_sample_frames=true"
             model="${model}_saveframes"
             ;;

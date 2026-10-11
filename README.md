@@ -61,10 +61,50 @@ README 后文提到的 `C:\Users\a2818\Desktop\QA\总问答数据.xlsx` 是用�
 | `qwen2_5vl_72b_api`                   | API |
 | `qwen3vl_235b_a22b_api`               | API |
 | `internvideo2_5_chat_8b`(暂不评,环境问题难解决) | 本地模型 |
+| `qwen3_5_27b`（Qwen3.5-27B）            | 本地模型 |
+| `qwen3_5_35b_a3b`（Qwen3.5-35B-A3B）    | 本地模型 |
+| `Qwen3.5-122B-A10B`(待接入)            | API |
+| `internvl3_5_30b_a3b`（InternVL3.5-30B-A3B） | 本地模型 |
+| `InternVL3.5-241B-A28B`(待接入)         | API |
+| `gemma_4_31b`（Gemma-4-31B-it）          | 本地模型 |
+| `gemma_4_26b_a4b`（Gemma-4-26B-A4B-it）  | 本地模型 |
+| `Claude Opus 5.5`(待接入)              | API |
+| `Claude Sonnet 5.5`(待接入)            | API |
+| `gemma_4_12b`（Gemma-4-12B-it）          | 本地模型 |
 
 `gpt6_astra`（GPT-6 Astra）和 `gemini_3_8_flash`（Gemini 3.8 Flash）为新增评估计划，尚未接入评估脚本。
 
 可以用逗号一次评估多个模型，也可以使用 `--model all` 评估全部支持模型。
+
+### 新接入的 6 个本地模型
+
+上述 Qwen3.5 两个模型、InternVL3.5-30B-A3B 和 Gemma 4 三个模型已接入适配器、模型注册表及统一启动脚本，尚未在服务器加载权重或验证评估结果。
+
+所有新增适配器强制从本地读取权重（`local_files_only=True`）。先通过魔搭下载完整模型快照，再放入以下默认目录；目录不存在或缺少 `config.json` 会直接报错，不会自动访问 Hugging Face。若魔搭快照位于其他目录，请用 `lmms-eval --model 模型名 --model_args pretrained=/绝对路径,...` 指定。
+
+| 启动模型名 | 默认本地快照目录（相对于 `~/.cache/modelscope/hub/models/`） | Transformers 模型类 |
+| --- | --- | --- |
+| `qwen3_5_27b` | `Qwen/Qwen3.5-27B` | `Qwen3_5ForConditionalGeneration` |
+| `qwen3_5_35b_a3b` | `Qwen/Qwen3.5-35B-A3B` | `Qwen3_5MoeForConditionalGeneration` |
+| `internvl3_5_30b_a3b` | `OpenGVLab/InternVL3_5-30B-A3B` | `AutoModel`，使用快照中的 remote code |
+| `gemma_4_31b` | `google/gemma-4-31B-it` | `Gemma4ForConditionalGeneration` |
+| `gemma_4_26b_a4b` | `google/gemma-4-26B-A4B-it` | `Gemma4ForConditionalGeneration`（MoE 配置） |
+| `gemma_4_12b` | `google/gemma-4-12B-it` | `Gemma4UnifiedForConditionalGeneration`（Unified 架构） |
+
+**环境要求：** InternVL3.5-30B-A3B 沿用现有 InternVL3.5 环境。Qwen3.5 和 Gemma 4 需要单独准备包含上表模型类及对应 `AutoProcessor` 的新版 Transformers 环境，现有 `4.57.x` 无法加载；Gemma 4 12B 还要求支持 `gemma4_unified`，不能用 Gemma 3 或普通 Gemma 4 类替代。仓库现有依赖锁定保持不变，建议在可联网机器准备兼容环境或离线安装包后传到服务器。接口依据：[Qwen3.5 官方配置](https://huggingface.co/Qwen/Qwen3.5-27B/blob/main/config.json)、[Gemma 4 文档](https://huggingface.co/docs/transformers/model_doc/gemma4)、[Gemma 4 Unified 文档](https://huggingface.co/docs/transformers/model_doc/gemma4_unified)。
+
+Qwen3.5 和 Gemma 4 复用 Qwen3-VL 的均匀、fps、指定关键帧采样、盲测、保存抽帧及二轮解释流程；视频处理器接收已采样帧及原始帧索引、原始 fps，关闭二次抽帧。默认关闭 thinking，使用 `sdpa`；Qwen3.5 可通过 `max_pixels` 调整视觉预算，Gemma 4 通过 `max_soft_tokens=70/140/280/560/1120` 调整（默认 `280`）。这五个模型也沿用 token 统计和 prompt 调试。InternVL3.5-30B-A3B 复用现有 InternVL3.5 的图块处理、均匀/关键帧采样、盲测、保存抽帧及二轮解释，不支持 fps 采样。
+
+统一脚本对这 6 个模型固定使用单进程、多卡分配权重，默认每卡为推理预留 4 GiB；InternVL 同时按单图块执行视觉编码。按服务器空闲情况选择 GPU，并先用 `--limit 2` 短测：
+
+```bash
+bash evaluate_all_in_one.sh --model qwen3_5_27b --num_processes 1 --cuda_visible_devices 0,1,2,3 --num_frames 16 --limit 2
+bash evaluate_all_in_one.sh --model qwen3_5_35b_a3b --num_processes 1 --cuda_visible_devices 0,1,2,3 --num_frames 16 --limit 2
+bash evaluate_all_in_one.sh --model internvl3_5_30b_a3b --num_processes 1 --cuda_visible_devices 0,1,2,3 --num_frames 16 --limit 2
+bash evaluate_all_in_one.sh --model gemma_4_31b --num_processes 1 --cuda_visible_devices 0,1,2,3 --num_frames 16 --limit 2
+bash evaluate_all_in_one.sh --model gemma_4_26b_a4b --num_processes 1 --cuda_visible_devices 0,1,2,3 --num_frames 16 --limit 2
+bash evaluate_all_in_one.sh --model gemma_4_12b --num_processes 1 --cuda_visible_devices 0,1,2,3 --num_frames 16 --limit 2
+```
 
 ## 支持评估模式
 

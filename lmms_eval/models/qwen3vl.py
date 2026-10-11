@@ -14,7 +14,6 @@ from accelerate.state import AcceleratorState
 from accelerate.utils import InitProcessGroupKwargs
 from loguru import logger as eval_logger
 from PIL import Image
-from qwen_vl_utils import process_vision_info
 from tqdm import tqdm
 from transformers import AutoProcessor
 
@@ -469,6 +468,8 @@ class Qwen3VL(lmms):
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
 
     def _generate_from_messages(self, messages, gen_kwargs, media_type, debug_metadata=None):
+        from qwen_vl_utils import process_vision_info
+
         text = self._processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         self._debug_dump_prompt(messages, text, gen_kwargs, media_type, debug_metadata)
         processor_kwargs = {"text": [text], "padding": True, "return_tensors": "pt"}
@@ -511,6 +512,9 @@ class Qwen3VL(lmms):
         gc.collect()
         torch.cuda.empty_cache()
         return output_text
+
+    def _build_video_content(self, video_frames, effective_fps, source_fps, total_frames, frame_indices):
+        return {"type": "video", "video": video_frames, "sample_fps": effective_fps}
 
     def generate_until(self, requests) -> List[str]:
         self._reset_token_usage()
@@ -598,7 +602,7 @@ class Qwen3VL(lmms):
                     video_frames = [Image.fromarray(frame).convert("RGB") for frame in frames]
 
                 # 帧列表已经锁定视觉输入；sample_fps 仅保留这些帧在原视频中的时间跨度。
-                video_content = {"type": "video", "video": video_frames, "sample_fps": effective_fps}
+                video_content = self._build_video_content(video_frames, effective_fps, source_fps, total_frames, frame_indices)
                 if self.max_pixels is not None:
                     video_content["max_pixels"] = self.max_pixels
                 messages = [

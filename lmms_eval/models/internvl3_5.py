@@ -220,6 +220,7 @@ class InternVL3_5(lmms):
         save_sample_frames: bool = False,
         explain_answer: bool = False,
         explanation_max_new_tokens: int = 2048,
+        local_files_only: bool = False,
         **kwargs,
     ):
         super().__init__()
@@ -259,6 +260,7 @@ class InternVL3_5(lmms):
                 trust_remote_code=True,
                 device_map=device_map,
                 max_memory=max_memory,
+                local_files_only=local_files_only,
             ).eval()
             # Preserve Accelerate's dispatch/offload hooks. Replacing the lm_head
             # hook can move its weights onto an already full embedding GPU.
@@ -270,6 +272,7 @@ class InternVL3_5(lmms):
                     torch_dtype=torch.bfloat16,
                     low_cpu_mem_usage=True,
                     trust_remote_code=True,
+                    local_files_only=local_files_only,
                 )
                 .eval()
                 .cuda()
@@ -277,9 +280,9 @@ class InternVL3_5(lmms):
 
         enable_chunked_vision(self._model, self.vision_batch_size)
         eval_logger.info(f"InternVL vision encoder batch size: {self.vision_batch_size} patches (all sampled frames retained).")
-        self._config = AutoConfig.from_pretrained(self.path, trust_remote_code=True)
+        self._config = AutoConfig.from_pretrained(self.path, trust_remote_code=True, local_files_only=local_files_only)
 
-        self._tokenizer = AutoTokenizer.from_pretrained(self.path, trust_remote_code=True)
+        self._tokenizer = AutoTokenizer.from_pretrained(self.path, trust_remote_code=True, local_files_only=local_files_only)
         if self._tokenizer.pad_token_id is None and self._tokenizer.eos_token_id is not None:
             self._tokenizer.pad_token = self._tokenizer.eos_token
 
